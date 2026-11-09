@@ -1,105 +1,60 @@
-# gdirect
+<p align="center"><img src="android/icon.png" width="112" alt="gdirect mobile icon"></p>
 
-[![Release](https://img.shields.io/github/v/release/mizorewww/gdirect)](https://github.com/mizorewww/gdirect/releases/latest)
-[![CI](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml/badge.svg)](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/mizorewww/gdirect)](LICENSE)
+# gdirect mobile
 
-[中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [Android app](android/README.md)
+[中文](README.zh-CN.md) · [Releases](https://github.com/acnekot/gdirect/releases) · [Upstream gdirect](https://github.com/mizorewww/gdirect)
 
-Browse, download, upload and mount your Google Drive from networks where Google is blocked, without a proxy for the transfers themselves. gdirect finds Google front-end IPs that your network can still reach and sends Drive traffic straight to them, with multi-connection, resumable downloads.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/files-dark.png">
-  <img alt="The gdirect desktop client listing a Drive folder, with one file downloading and others queued" src="docs/images/en/files-light.png">
-</picture>
-
-<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-windows-x64.msi"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for%20Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a></p>
-
-<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-arm64.zip"><img alt="Download for macOS (Apple silicon)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Apple%20silicon%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
-
-<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Intel%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
-
-<p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/badge/Download%20for%20Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a></p>
+An Android client for Google Drive that talks to Google over front-end IPs your network can still reach, with multi-connection resumable downloads. It is a mobile port of [mizorewww/gdirect](https://github.com/mizorewww/gdirect): a Flutter UI on top of the upstream Rust engine.
 
 <p align="center"><a href="https://github.com/acnekot/gdirect/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="Download for Android (arm64)" src="https://img.shields.io/badge/Download%20for%20Android%20%28arm64%29-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
 
-- **Direct transfers:** scans Google's own front ends and keeps the ones that answer; certificates are checked against Google's roots built into the binary.
-- **Fast and resumable:** up to 16 connections per download, MD5 checked; interrupted downloads and uploads pick up where they stopped.
-- **Terminal and desktop:** a yazi-style file browser in the terminal, scripting commands, and a desktop app (preview).
-- **Mount:** use Drive as a local folder through rclone, also without a proxy.
-- **Multiple accounts** with your own Google OAuth client — nothing passes through a third party.
+## Features
 
-## Quick start
+- **Browse:** My Drive, shared drives, shared with me, starred, recent and trash; search.
+- **Quick look:** tap an image, a text file, a Google Doc or a Google Sheet to view it without downloading.
+- **Fast downloads:** up to 16 connections per file, resumable, MD5 checked; Google Docs, Sheets and Slides export to docx, xlsx, pptx or pdf.
+- **Transfer details:** live speed graph, average and peak speed, ETA, connections and elapsed time for every transfer.
+- **Uploads, file management, several accounts:** rename, star, trash, restore, delete.
+- **Network scan:** finds the Google endpoints reachable from your current network.
+- **Long transfers:** a foreground service keeps them running with the screen off.
 
-**1. Install** (macOS 15+, Linux x86_64 with glibc 2.35+, Windows x86_64)
+## Install and set up
 
-```sh
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/mizorewww/gdirect/main/scripts/install.sh | bash
-# or Homebrew (Homebrew 7 asks you to trust a tap before installing from it)
-brew tap mizorewww/gdirect https://github.com/mizorewww/gdirect && brew trust mizorewww/gdirect
-brew install mizorewww/gdirect/gdirect
-# or Arch Linux (AUR)
-paru -S gdirect-bin # or yay -S gdirect-bin (use gdirect-git to build from VCS)
-```
+1. Download the APK from the [latest Android release](https://github.com/acnekot/gdirect/releases/latest) (arm64, Android 10 or newer; signed with a debug key).
+2. Create your own Google OAuth client of type *Desktop app* and enable the Drive API.
+3. In the app, paste the client ID and secret (or import the JSON) and sign in in the browser.
+4. Open *Settings → Network scan* and scan once per network.
 
-```powershell
-# Windows PowerShell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/mizorewww/gdirect/main/scripts/install.ps1')))
-```
+**With a VPN:** Android lets no app bypass a running VPN by itself. Exclude gdirect in your VPN or proxy app's per-app settings, otherwise the scan and downloads go through it instead of directly.
 
-Add `--with-mount` (PowerShell: `-WithMount`) to also install what `mount` needs. Archives for every platform are on the [releases page](https://github.com/mizorewww/gdirect/releases/latest).
+**Storage:** finished downloads are saved to `Download/gdirect`. They are staged in app storage first, so a download needs about twice its size in free space for a while.
 
-**2. Create your Google client** — once, about 10 minutes: follow the [Google setup guide](docs/configuration/README.md) to download a *Desktop app* OAuth client JSON.
+## How it differs from upstream
 
-**3. Sign in** — a browser opens; signing in needs normal access to Google, so keep a proxy on for this step if Google is blocked:
+The upstream downloader uses a patched libaria2, which is impractical to cross-compile for Android. [`android/core/src/download.rs`](android/core/src/download.rs) replaces it with a pure Rust downloader: ranged chunks over N connections, a `.gdl` control file for resuming, redirect following with a host allowlist, and MD5 verification. Everything else in `android/core` is the upstream engine. The Flutter app talks to it through a small C interface (`android/ffi`, `dart:ffi`).
 
-```sh
-gdirect login --client-secret ~/Downloads/client_secret.json
-# or, without the file: gdirect login --client-id ID   (asks for the secret)
-```
+The desktop client, CLI and packaging files in the rest of this repository are the unchanged upstream project; see its README for them.
 
-**4. Use it**
+## Build
+
+Needs Rust (stable), the Android SDK with NDK 27, and Flutter.
 
 ```sh
-gdirect                          # browse your Drive; press ? for keys, d to download, u to upload
-gdirect download FILE_ID_OR_URL  # saves to ./downloads
-gdirect upload ./photos -r       # upload a folder; run again to resume
-gdirect mount                    # Drive at ~/GoogleDrive
+cd android
+export ANDROID_HOME=$HOME/Android/Sdk
+ABIS="arm64-v8a" ./scripts/build-rust-android.sh
+cd app && flutter build apk --release --target-platform android-arm64
 ```
 
-The first transfer scans for reachable Google IPs, which can take about a minute.
+[`.github/workflows/android.yml`](.github/workflows/android.yml) builds three ABIs in CI. More detail is in [`android/README.md`](android/README.md).
 
-> [!IMPORTANT]
-> Using a TUN-mode proxy or VPN (sing-box, Clash TUN…)? Nothing to set up: gdirect binds its Google connections to your network adapter, so the tunnel never carries them; sign-in still uses the proxy. Turn this off with `gdirect scan --bypass-tun off` or in the desktop client's Settings › Network. See [Network and proxies](docs/network.md#tun-proxies-and-vpns).
+## Limits
 
-## Desktop app (preview)
-
-The same engine in a Material 3 window: browse and manage files, drag files in to upload, watch the transfer queue, scan and pin endpoints, and switch accounts. It shares the command line's sign-in and settings, follows your system's language (English or Chinese), and adapts to narrow windows.
-
-| Transfers | Routes | Settings |
-| --- | --- | --- |
-| ![Transfer queue with finished downloads](docs/images/en/transfers.png) | ![Routes page with latencies](docs/images/en/endpoints.png) | ![Appearance settings](docs/images/en/settings.png) |
-
-Download it with the buttons at the top, or from the [releases page](https://github.com/mizorewww/gdirect/releases/latest):
-
-- **macOS:** unzip and move `gdirect.app` to Applications, or, with the tap added and trusted as in [Quick start](#quick-start), `brew install --cask mizorewww/gdirect/gdirect-desktop`. The app is not notarized: the first time, open it, then allow it under System Settings › Privacy & Security › Open Anyway.
-- **Windows:** run `gdirect-desktop-windows-x64.msi`; gdirect appears in the Start menu. Windows SmartScreen may warn that the publisher is unknown: choose More info › Run anyway.
-- **Linux (x86_64, glibc 2.35+):** unpack the tarball and run `./install.sh` inside it for a menu entry, or start `gdirect-desktop` directly. On Arch Linux, install via AUR: `paru -S gdirect-desktop-bin` (or `gdirect-desktop-git`).
-
-To build it yourself, see [Building from source](docs/building.md#desktop-client).
-
-## Documentation
-
-- [Usage](docs/usage.md) — every command, `browse` keys, multiple accounts, mount, where data is kept
-- [Network and proxies](docs/network.md) — what goes where, scanning, TUN and system-proxy setups
-- [Google setup and troubleshooting](docs/configuration/README.md) — the OAuth client, sign-in problems, the 7-day expiry
-- [Building from source](docs/building.md) — command line and desktop app
+- Folders cannot be downloaded as a whole.
+- The release APK uses the debug signing key; set up your own signing before distributing it.
+- On Android 15 the data-sync foreground service is limited to about 6 hours a day.
+- There is no per-network binding yet, hence the VPN note above.
 
 ## License
 
-[GPL-2.0-or-later](LICENSE)
-
-## Android
-
-This fork adds an Android app in [`android/`](android/README.md): a Flutter UI over the same Rust engine, with a pure-Rust multi-connection downloader (no libaria2), quick look for images and text, per-transfer speed details, and a foreground service for long transfers. Install the APK from the [Android release](https://github.com/acnekot/gdirect/releases/tag/android-v1.0.0); it is arm64 and signed with a debug key. If a VPN is running, exclude gdirect in its per-app settings so traffic can go direct.
+GPL-2.0-or-later, like upstream. See [LICENSE](LICENSE). Thanks to [mizorewww](https://github.com/mizorewww) for gdirect.
