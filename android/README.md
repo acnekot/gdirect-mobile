@@ -14,6 +14,8 @@ of [mizorewww/gdirect](https://github.com/mizorewww/gdirect).
   Rust downloader: ranged chunks over N connections, a `.gdl` control file for
   resuming, redirect following with a host allowlist, MD5 verification.
 
+Install: download the APK from the [Android release](https://github.com/acnekot/gdirect/releases/tag/android-v1.0.0).
+
 ## Features
 
 Quick look (tap an image, text file, Google Doc or Sheet to view it without downloading);

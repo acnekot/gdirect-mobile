@@ -4,7 +4,7 @@
 [![CI](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml/badge.svg)](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/mizorewww/gdirect)](LICENSE)
 
-[English](README.md) · [更新日志](CHANGELOG.md)
+[English](README.md) · [更新日志](CHANGELOG.md) · [Android 版](android/README.zh-CN.md)
 
 在 Google 被屏蔽的网络里浏览、下载、上传和挂载 Google 云盘，传输本身不需要代理。gdirect 会找出当前网络仍能直连的 Google 前端 IP，让云盘流量直接连过去，下载支持多连接和断点续传。
 
@@ -20,6 +20,8 @@
 <p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="下载 macOS 版（Intel）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20macOS%20%E7%89%88%EF%BC%88Intel%EF%BC%89-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
 
 <p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="下载 Linux 版" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Linux%20%E7%89%88-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a></p>
+
+<p align="center"><a href="https://github.com/acnekot/gdirect/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="下载 Android 版（arm64）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Android%20%E7%89%88%EF%BC%88arm64%EF%BC%89-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
 
 - **直连传输：** 扫描 Google 自己的前端，只用能连通的那些；证书按程序内置的 Google 根证书校验。
 - **快且可续传：** 每个下载最多 16 条连接，完成后校验 MD5；下载和上传中断后都能接着传。
@@ -97,3 +99,7 @@ gdirect mount                    # 挂载到 ~/GoogleDrive
 ## 许可证
 
 [GPL-2.0-or-later](LICENSE)
+
+## Android 版
+
+这个 fork 在 [`android/`](android/README.zh-CN.md) 里加了安卓应用：Flutter 界面加同一套 Rust 引擎，用纯 Rust 实现多连接下载（不依赖 libaria2），支持图片和文本快速浏览、每个传输的速度详情，以及长时间传输用的前台服务。APK 在 [Android 发布页](https://github.com/acnekot/gdirect/releases/tag/android-v1.0.0)，仅 arm64，用 debug 密钥签名。开着 VPN 时，请在它的分应用设置里让 gdirect 绕过，流量才能直连。

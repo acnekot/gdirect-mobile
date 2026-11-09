@@ -4,7 +4,7 @@
 [![CI](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml/badge.svg)](https://github.com/mizorewww/gdirect/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/mizorewww/gdirect)](LICENSE)
 
-[中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+[中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [Android app](android/README.md)
 
 Browse, download, upload and mount your Google Drive from networks where Google is blocked, without a proxy for the transfers themselves. gdirect finds Google front-end IPs that your network can still reach and sends Drive traffic straight to them, with multi-connection, resumable downloads.
 
@@ -20,6 +20,8 @@ Browse, download, upload and mount your Google Drive from networks where Google 
 <p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-macos-x64.zip"><img alt="Download for macOS (Intel)" src="https://img.shields.io/badge/Download%20for%20macOS%20%28Intel%29-000000?style=for-the-badge&logo=apple&logoColor=white"></a></p>
 
 <p align="center"><a href="https://github.com/mizorewww/gdirect/releases/latest/download/gdirect-desktop-linux-x64.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/badge/Download%20for%20Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black"></a></p>
+
+<p align="center"><a href="https://github.com/acnekot/gdirect/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="Download for Android (arm64)" src="https://img.shields.io/badge/Download%20for%20Android%20%28arm64%29-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
 
 - **Direct transfers:** scans Google's own front ends and keeps the ones that answer; certificates are checked against Google's roots built into the binary.
 - **Fast and resumable:** up to 16 connections per download, MD5 checked; interrupted downloads and uploads pick up where they stopped.
@@ -97,3 +99,7 @@ To build it yourself, see [Building from source](docs/building.md#desktop-client
 ## License
 
 [GPL-2.0-or-later](LICENSE)
+
+## Android
+
+This fork adds an Android app in [`android/`](android/README.md): a Flutter UI over the same Rust engine, with a pure-Rust multi-connection downloader (no libaria2), quick look for images and text, per-transfer speed details, and a foreground service for long transfers. Install the APK from the [Android release](https://github.com/acnekot/gdirect/releases/tag/android-v1.0.0); it is arm64 and signed with a debug key. If a VPN is running, exclude gdirect in its per-app settings so traffic can go direct.
