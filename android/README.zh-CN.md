@@ -6,7 +6,7 @@ gdirect 的 Android 版：通过可直连的 Google 前端 IP 访问 Google Driv
 - **引擎**：上游 Rust 代码（`core/`），经 `ffi/` 的 C 接口由 Dart 通过 `dart:ffi` 调用。
 - **下载**：上游依赖打过补丁的 libaria2，很难交叉编译到 Android。`core/src/download.rs` 用纯 Rust 重写：分块 Range 请求、N 连接并行、`.gdl` 控制文件断点续传、带主机白名单的重定向跟随、MD5 校验。
 
-安装：到 [Android 发布页](https://github.com/acnekot/gdirect/releases/tag/android-v1.0.0) 下载 APK。
+安装：到 [Android 发布页](https://github.com/acnekot/gdirect-mobile/releases/tag/android-v1.0.0) 下载 APK。
 
 ## 功能
 

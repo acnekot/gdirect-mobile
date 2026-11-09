@@ -2,11 +2,11 @@
 
 # gdirect mobile
 
-[中文](README.zh-CN.md) · [Releases](https://github.com/acnekot/gdirect/releases) · [Upstream gdirect](https://github.com/mizorewww/gdirect)
+[中文](README.zh-CN.md) · [Releases](https://github.com/acnekot/gdirect-mobile/releases) · [Upstream gdirect](https://github.com/mizorewww/gdirect)
 
 An Android client for Google Drive that talks to Google over front-end IPs your network can still reach, with multi-connection resumable downloads. It is a mobile port of [mizorewww/gdirect](https://github.com/mizorewww/gdirect): a Flutter UI on top of the upstream Rust engine.
 
-<p align="center"><a href="https://github.com/acnekot/gdirect/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="Download for Android (arm64)" src="https://img.shields.io/badge/Download%20for%20Android%20%28arm64%29-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
+<p align="center"><a href="https://github.com/acnekot/gdirect-mobile/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="Download for Android (arm64)" src="https://img.shields.io/badge/Download%20for%20Android%20%28arm64%29-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
 
 ## Features
 
@@ -20,7 +20,7 @@ An Android client for Google Drive that talks to Google over front-end IPs your 
 
 ## Install and set up
 
-1. Download the APK from the [latest Android release](https://github.com/acnekot/gdirect/releases/latest) (arm64, Android 10 or newer; signed with a debug key).
+1. Download the APK from the [latest Android release](https://github.com/acnekot/gdirect-mobile/releases/latest) (arm64, Android 10 or newer; signed with a debug key).
 2. Create your own Google OAuth client of type *Desktop app* and enable the Drive API.
 3. In the app, paste the client ID and secret (or import the JSON) and sign in in the browser.
 4. Open *Settings → Network scan* and scan once per network.

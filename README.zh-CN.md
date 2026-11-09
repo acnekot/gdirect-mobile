@@ -2,11 +2,11 @@
 
 # gdirect mobile
 
-[English](README.md) · [发布页](https://github.com/acnekot/gdirect/releases) · [上游 gdirect](https://github.com/mizorewww/gdirect)
+[English](README.md) · [发布页](https://github.com/acnekot/gdirect-mobile/releases) · [上游 gdirect](https://github.com/mizorewww/gdirect)
 
 Google 云盘的 Android 客户端：通过当前网络仍能直连的 Google 前端 IP 访问云盘，下载支持多连接和断点续传。移植自 [mizorewww/gdirect](https://github.com/mizorewww/gdirect)，Flutter 界面加上上游的 Rust 引擎。
 
-<p align="center"><a href="https://github.com/acnekot/gdirect/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="下载 Android 版（arm64）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Android%20%E7%89%88%EF%BC%88arm64%EF%BC%89-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
+<p align="center"><a href="https://github.com/acnekot/gdirect-mobile/releases/download/android-v1.0.0/gdirect-mobile-android-arm64.apk"><img alt="下载 Android 版（arm64）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Android%20%E7%89%88%EF%BC%88arm64%EF%BC%89-3DDC84?style=for-the-badge&logo=android&logoColor=white"></a></p>
 
 ## 功能
 
@@ -20,7 +20,7 @@ Google 云盘的 Android 客户端：通过当前网络仍能直连的 Google �
 
 ## 安装与设置
 
-1. 从[最新 Android 发布页](https://github.com/acnekot/gdirect/releases/latest)下载 APK（arm64，Android 10 及以上，用 debug 密钥签名）。
+1. 从[最新 Android 发布页](https://github.com/acnekot/gdirect-mobile/releases/latest)下载 APK（arm64，Android 10 及以上，用 debug 密钥签名）。
 2. 创建自己的 Google OAuth 客户端，类型选“桌面应用”，并启用 Drive API。
 3. 在应用里粘贴客户端 ID 和密钥（或导入 JSON），再在浏览器里登录。
 4. 打开“设置 → 网络扫描”，每换一个网络扫描一次。
