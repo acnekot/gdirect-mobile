@@ -1,0 +1,27 @@
+[package]
+name = "gdirect-core"
+version = "0.1.0"
+edition = "2024"
+description = "Engine of gdirect (Google Drive over scanned Google front ends), trimmed for mobile"
+license = "GPL-2.0-or-later"
+
+[dependencies]
+anyhow = "1"
+scraper = "0.24"
+url = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+sha2 = "0.11"
+base64 = "0.22"
+getrandom = "0.3"
+md-5 = "0.11"
+socket2 = { version = "0.6", features = ["all"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }

@@ -1,0 +1,7 @@
+/target/
+/app/build/
+/app/.dart_tool/
+/app/android/app/src/main/jniLibs/
+/app/android/.gradle/
+/app/android/local.properties
+/app/android/build/
