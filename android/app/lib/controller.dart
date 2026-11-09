@@ -16,6 +16,8 @@ class AppController extends ChangeNotifier {
   Map<String, dynamic> state = {};
   List<TransferItem> transfers = [];
   final Map<int, TransferStats> stats = {};
+  /// Quick looks in flight, kept apart from the transfer list.
+  Map<int, TransferItem> previews = {};
   bool ready = false;
   String? fatal;
 
@@ -58,7 +60,7 @@ class AppController extends ChangeNotifier {
   void _schedule() {
     _timer?.cancel();
     _timer = Timer(
-      Duration(milliseconds: activeTransfers > 0 ? 700 : 2500),
+      Duration(milliseconds: activeTransfers > 0 || previews.values.any((p) => p.active) ? 500 : 2500),
       () {
         _tick();
         _schedule();
@@ -84,9 +86,11 @@ class AppController extends ChangeNotifier {
       final raw = jsonEncode(Engine.fast('transfers'));
       if (raw != _last) {
         _last = raw;
-        transfers = (jsonDecode(raw) as List)
+        final all = (jsonDecode(raw) as List)
             .map((e) => TransferItem((e as Map).cast<String, dynamic>()))
             .toList();
+        previews = {for (final i in all.where((i) => i.isPreview)) i.id: i};
+        transfers = all.where((i) => !i.isPreview).toList();
         for (final item in transfers) {
           stats.putIfAbsent(item.id, TransferStats.new).observe(item);
         }
@@ -154,6 +158,25 @@ class AppController extends ChangeNotifier {
     await Engine.slow('download', {'id': file.id, 'export': export});
     _tick();
     _schedule();
+  }
+
+  /// Starts fetching [file] for a quick look and returns the engine's id.
+  Future<int> startPreview(DriveFile file) async {
+    final reply = Engine.map(await Engine.slow('download', {
+      'id': file.id,
+      'preview': true,
+      if (file.previewExport != null) 'export': file.previewExport,
+    }));
+    _tick();
+    _schedule();
+    return (reply['id'] as num).toInt();
+  }
+
+  void endPreview(int id) {
+    try {
+      Engine.fast('transfer_remove', {'id': id});
+    } catch (_) {}
+    _tick();
   }
 
   /// Lets the person pick files and uploads them into [parentId].

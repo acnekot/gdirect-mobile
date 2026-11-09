@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 const folderMime = 'application/vnd.google-apps.folder';
 const shortcutMime = 'application/vnd.google-apps.shortcut';
 
+enum PreviewKind { none, image, text }
+
 /// A Drive item as the engine reports it.
 class DriveFile {
   DriveFile(this.json);
@@ -36,6 +38,46 @@ class DriveFile {
       ].contains(mimeType.replaceFirst('application/vnd.google-apps.', ''));
 
   bool get canDownload => !isFolder && (!isWorkspace || exportable);
+
+  String get _ext {
+    final dot = name.lastIndexOf('.');
+    return dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
+  }
+
+  /// What a quick look can show for this file.
+  PreviewKind get previewKind {
+    if (isFolder || isShortcut || trashed) return PreviewKind.none;
+    final m = mimeType;
+    if (m == 'application/vnd.google-apps.document' || m == 'application/vnd.google-apps.spreadsheet') {
+      return PreviewKind.text;
+    }
+    if (isWorkspace) return PreviewKind.none;
+    if (const ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].contains(m)) {
+      return PreviewKind.image;
+    }
+    if (const ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].contains(_ext) && m == 'application/octet-stream') {
+      return PreviewKind.image;
+    }
+    const textExt = [
+      'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'log', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg',
+      'html', 'htm', 'css', 'js', 'ts', 'dart', 'py', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'sh',
+      'sql', 'srt', 'lrc', 'properties', 'gradle', 'tex', 'bib',
+    ];
+    if (m.startsWith('text/') ||
+        const ['application/json', 'application/xml', 'application/x-yaml', 'application/javascript', 'application/x-sh']
+            .contains(m) ||
+        textExt.contains(_ext)) {
+      return PreviewKind.text;
+    }
+    return PreviewKind.none;
+  }
+
+  /// The export format a quick look asks for, for Google documents.
+  String? get previewExport => switch (mimeType) {
+        'application/vnd.google-apps.document' => 'txt',
+        'application/vnd.google-apps.spreadsheet' => 'csv',
+        _ => null,
+      };
 
   String get owner {
     final owners = (json['owners'] as List?) ?? const [];
@@ -75,6 +117,7 @@ class TransferItem {
 
   int get id => json['id'] as int;
   bool get isDownload => json['kind'] == 'download';
+  bool get isPreview => json['preview'] == true;
   String get name => json['name'] as String;
   String get path => json['path'] as String;
   String get status => json['status'] as String;

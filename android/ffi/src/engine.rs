@@ -67,6 +67,9 @@ fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
         .as_str()
         .with_context(|| format!("missing argument {key}"))
 }
+/// Largest file a quick look will fetch.
+const PREVIEW_LIMIT: u64 = 50 << 20;
+
 fn opt<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args[key].as_str().filter(|s| !s.is_empty())
 }
@@ -96,6 +99,10 @@ struct Record {
     saved: Option<String>,
     /// The uploaded file's Drive ID.
     remote_id: Option<String>,
+    /// A quick look: not listed as a transfer, not saved to Downloads and
+    /// not held back by the parallel limit.
+    #[serde(default)]
+    preview: bool,
 }
 #[derive(Default, Clone, Copy)]
 struct Live {
@@ -127,6 +134,7 @@ impl Transfer {
             "size": rec.size, "path": rec.path, "created": rec.created,
             "status": rec.status, "done": rec.done, "error": rec.error,
             "saved": rec.saved, "remoteId": rec.remote_id, "export": rec.export,
+            "preview": rec.preview,
             "total": if live.total > 0 { live.total } else { rec.size },
             "speed": if running { live.speed } else { 0 },
             "connections": if running { live.connections } else { 0 },
@@ -574,8 +582,19 @@ impl Engine {
         }
         ensure!(!file.folder(), "folders cannot be downloaded; open the folder and pick files");
         ensure!(file.downloadable(), "Google cannot export this kind of file");
+        let preview = args["preview"].as_bool().unwrap_or(false);
+        if preview && !file.workspace() {
+            let size: u64 = file.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ensure!(
+                size <= PREVIEW_LIMIT,
+                "too large for a quick look ({} MB); download it instead",
+                size >> 20
+            );
+        }
         let (export, name) = if file.workspace() {
             let (mime, ext) = match opt(args, "export").unwrap_or("pdf") {
+                "txt" => ("text/plain", "txt"),
+                "csv" => ("text/csv", "csv"),
                 "docx" => (
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "docx",
@@ -608,6 +627,7 @@ impl Engine {
             path: path.to_string_lossy().into_owned(),
             created: gdirect_core::store::now(),
             status: "queued".into(),
+            preview,
             ..Record::default()
         };
         self.enqueue(rec)
@@ -651,7 +671,8 @@ impl Engine {
     }
     fn run_transfer(&self, t: Arc<Transfer>, cancel: Arc<AtomicBool>) {
         let limit = self.setting("mobile_parallel", 2).clamp(1, 4) as usize;
-        if !self.slots.acquire(limit, &cancel) {
+        let preview = t.rec.lock().unwrap().preview;
+        if !preview && !self.slots.acquire(limit, &cancel) {
             t.set("cancelled", None);
             self.save_transfers();
             return;
@@ -666,7 +687,9 @@ impl Engine {
             }
         }))
         .unwrap_or_else(|_| Err(anyhow!("transfer crashed")));
-        self.slots.release();
+        if !preview {
+            self.slots.release();
+        }
         match result {
             Ok(()) => t.set("done", None),
             Err(_) if cancel.load(Ordering::Relaxed) => t.set("cancelled", None),
@@ -792,6 +815,14 @@ impl Engine {
         let mut list = self.transfers.lock().unwrap();
         for mut rec in records {
             next = next.max(rec.id + 1);
+            // Quick looks do not outlive the app.
+            if rec.preview {
+                download::discard(Path::new(&rec.path));
+                if let Some(dir) = Path::new(&rec.path).parent() {
+                    let _ = fs::remove_dir(dir);
+                }
+                continue;
+            }
             // The app was closed mid-transfer; resuming is one tap away.
             if matches!(rec.status.as_str(), "queued" | "running") {
                 rec.status = "paused".into();

@@ -6,6 +6,7 @@ import '../engine.dart';
 import '../format.dart';
 import '../main.dart';
 import '../models.dart';
+import 'preview_page.dart';
 
 class _Crumb {
   _Crumb(this.id, this.name, this.driveId);
@@ -193,6 +194,8 @@ class _FilesPageState extends State<FilesPage> {
       _searching = false;
       _search.clear();
       _load();
+    } else if (file.previewKind != PreviewKind.none && _place != Place.trash) {
+      openPreview(context, file);
     } else {
       _showActions(file);
     }
@@ -366,6 +369,8 @@ class _FilesPageState extends State<FilesPage> {
                 tile(Icons.delete_forever_rounded, t('永久删除', 'Delete forever'), () => _deleteForever(file),
                     color: scheme.error),
               ] else ...[
+                if (file.previewKind != PreviewKind.none)
+                  tile(Icons.visibility_rounded, t('快速浏览', 'Quick look'), () => openPreview(context, file)),
                 if (file.canDownload && !file.isWorkspace && !file.isShortcut)
                   tile(Icons.download_rounded, t('下载', 'Download'), () => _download(file)),
                 if (file.isWorkspace && file.exportable)

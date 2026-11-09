@@ -57,4 +57,18 @@ void main() {
     expect(t.active, isTrue);
     expect(t.fraction, 0.25);
   });
+
+  test('quick look picks the right kind', () {
+    DriveFile f(String name, String mime) => DriveFile({'id': 'x', 'name': name, 'mimeType': mime});
+    expect(f('a.png', 'image/png').previewKind, PreviewKind.image);
+    expect(f('a.svg', 'image/svg+xml').previewKind, PreviewKind.none);
+    expect(f('notes.md', 'application/octet-stream').previewKind, PreviewKind.text);
+    expect(f('a.json', 'application/json').previewKind, PreviewKind.text);
+    expect(f('a.zip', 'application/zip').previewKind, PreviewKind.none);
+    final doc = f('d', 'application/vnd.google-apps.document');
+    expect(doc.previewKind, PreviewKind.text);
+    expect(doc.previewExport, 'txt');
+    expect(f('s', 'application/vnd.google-apps.spreadsheet').previewExport, 'csv');
+    expect(f('p', 'application/vnd.google-apps.presentation').previewKind, PreviewKind.none);
+  });
 }

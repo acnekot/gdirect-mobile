@@ -16,7 +16,8 @@ of [mizorewww/gdirect](https://github.com/mizorewww/gdirect).
 
 ## Features
 
-Browse My Drive, shared drives, shared with me, starred, recent and trash;
+Quick look (tap an image, text file, Google Doc or Sheet to view it without downloading);
+browse My Drive, shared drives, shared with me, starred, recent and trash;
 search; download (Google Docs/Sheets/Slides export to docx/xlsx/pptx/pdf);
 upload; rename, star, trash, restore, delete; several accounts; network scan
 for usable Google endpoints; foreground service so transfers continue with
