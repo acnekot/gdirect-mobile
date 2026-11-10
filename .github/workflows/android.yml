@@ -93,10 +93,18 @@ jobs:
           name: gdirect-android
           path: android/dist/*
 
+      # Releases come from an android-vX.Y.Z tag, or from a push to android-mobile
+      # whose commit message contains [release] (the tag is then taken from pubspec.yaml).
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/android-v')
+        if: startsWith(github.ref, 'refs/tags/android-v') || contains(github.event.head_commit.message, '[release]')
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: android/dist
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "gdirect mobile ${GITHUB_REF_NAME#android-v}" --generate-notes --verify-tag * || gh release upload "$GITHUB_REF_NAME" * --clobber
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="$GITHUB_REF_NAME"; else
+            TAG="android-v$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' ../app/pubspec.yaml)"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" * --clobber
+          else
+            gh release create "$TAG" * --target "$GITHUB_SHA" --title "gdirect mobile ${TAG#android-v}" --generate-notes
+          fi
