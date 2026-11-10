@@ -70,7 +70,10 @@ class _TransferCard extends StatelessWidget {
         return parts.where((s) => s.isNotEmpty).join(' · ');
       case 'done':
         if (!item.isDownload) return t('已上传 · ${formatBytes(item.total)}', 'Uploaded · ${formatBytes(item.total)}');
-        if (item.saved != null) return t('已保存到 下载/gdirect · ${formatBytes(item.total)}', 'Saved to Downloads/gdirect · ${formatBytes(item.total)}');
+        if (item.saved != null) {
+          final where = ['gdirect', if ((item.subdir ?? '').isNotEmpty) item.subdir!].join('/');
+          return t('已保存到 下载/$where · ${formatBytes(item.total)}', 'Saved to Downloads/$where · ${formatBytes(item.total)}');
+        }
         if (saveError != null) return t('下载完成，但保存失败：$saveError', 'Downloaded, but saving failed: $saveError');
         return t('下载完成，正在保存到“下载”…', 'Downloaded, saving to Downloads…');
       case 'paused':
@@ -253,7 +256,8 @@ class _Details extends StatelessWidget {
             item.active ? '${item.connections}' : (stats.maxConnections > 0 ? t('最多 ${stats.maxConnections}', 'up to ${stats.maxConnections}') : '—')),
       (t('类型', 'Kind'), item.isDownload ? t('下载', 'Download') : t('上传', 'Upload')),
       (t('创建时间', 'Created'), formatTime(DateTime.fromMillisecondsSinceEpoch(item.created * 1000, isUtc: true).toIso8601String())),
-      if (item.isDownload) (t('暂存路径', 'Staging path'), item.path),
+      if (item.isDownload) (item.direct ? t('保存路径', 'Saved at') : t('暂存路径', 'Staging path'), item.path),
+      if ((item.subdir ?? '').isNotEmpty) (t('所属文件夹', 'Folder'), item.subdir!),
       if (item.saved != null) (t('已保存到', 'Saved to'), item.saved!),
       if (item.error != null) (t('错误', 'Error'), item.error!),
     ];

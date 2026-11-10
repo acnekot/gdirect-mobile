@@ -2,6 +2,7 @@
 //! through `dart:ffi`. Two functions: [`gdm_call`] runs a method and
 //! [`gdm_free`] releases its answer. See `engine.rs` for the methods.
 mod engine;
+mod serve;
 
 use std::ffi::{CStr, CString, c_char};
 

@@ -6,6 +6,7 @@ import '../engine.dart';
 import '../format.dart';
 import '../main.dart';
 import '../models.dart';
+import 'player_page.dart';
 import 'preview_page.dart';
 
 class _Crumb {
@@ -106,6 +107,10 @@ class _FilesPageState extends State<FilesPage> {
 
   Future<void> _load({bool more = false}) async {
     final gen = ++_gen;
+    // Shared files are offered this folder as their destination.
+    final here = _query.isEmpty && (_crumbs.isNotEmpty || _place == Place.root);
+    app.folderId = here ? _parent : 'root';
+    app.folderName = here && _crumbs.isNotEmpty ? _crumbs.last.name : '';
     setState(() {
       _loading = true;
       _error = null;
@@ -194,6 +199,8 @@ class _FilesPageState extends State<FilesPage> {
       _searching = false;
       _search.clear();
       _load();
+    } else if (file.previewKind == PreviewKind.media && _place != Place.trash) {
+      openPlayer(context, file);
     } else if (file.previewKind != PreviewKind.none && _place != Place.trash) {
       openPreview(context, file);
     } else {
@@ -209,7 +216,28 @@ class _FilesPageState extends State<FilesPage> {
     }
   }
 
-  Future<void> _download(DriveFile file, {String export = 'pdf'}) => _run(() async {
+  Future<void> _downloadFolder(DriveFile folder) => _run(() async {
+        _toast(t('正在读取文件夹…', 'Reading the folder…'));
+        final (count, skipped) = await app.downloadFolder(folder);
+        final extra = skipped > 0 ? t('，跳过 $skipped 个无法下载的项目', ', $skipped item(s) skipped') : '';
+        _toast(
+          count == 0
+              ? t('这个文件夹里没有可下载的文件', 'Nothing to download in this folder')
+              : t('已加入 $count 个下载$extra', 'Queued $count download(s)$extra'),
+          action: t('查看', 'View'),
+          onAction: widget.openTransfers,
+        );
+      });
+
+  Future<void> _uploadFolder() => _run(() async {
+        final n = await app.pickAndUploadFolder(_parent);
+        if (n == null) return;
+        await _load();
+        _toast(t('已加入 $n 个上传', 'Queued $n upload(s)'),
+            action: t('查看', 'View'), onAction: widget.openTransfers);
+      });
+
+  Future<void> _download(DriveFile file, {String? export}) => _run(() async {
         await app.download(file, export: export);
         _toast(t('已加入传输队列', 'Added to transfers'),
             action: t('查看', 'View'), onAction: widget.openTransfers);
@@ -369,7 +397,13 @@ class _FilesPageState extends State<FilesPage> {
                 tile(Icons.delete_forever_rounded, t('永久删除', 'Delete forever'), () => _deleteForever(file),
                     color: scheme.error),
               ] else ...[
-                if (file.previewKind != PreviewKind.none)
+                if (file.isFolder || file.shortcutToFolder)
+                  tile(Icons.download_rounded, t('下载整个文件夹', 'Download the whole folder'),
+                      () => _downloadFolder(file)),
+                if (file.previewKind == PreviewKind.media)
+                  tile(Icons.play_circle_outline_rounded, t('边下边播', 'Play while downloading'),
+                      () => openPlayer(context, file))
+                else if (file.previewKind != PreviewKind.none)
                   tile(Icons.visibility_rounded, t('快速浏览', 'Quick look'), () => openPreview(context, file)),
                 if (file.canDownload && !file.isWorkspace && !file.isShortcut)
                   tile(Icons.download_rounded, t('下载', 'Download'), () => _download(file)),
@@ -413,6 +447,14 @@ class _FilesPageState extends State<FilesPage> {
             onTap: () {
               Navigator.pop(context);
               _upload();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.drive_folder_upload_rounded),
+            title: Text(t('上传文件夹', 'Upload a folder')),
+            onTap: () {
+              Navigator.pop(context);
+              _uploadFolder();
             },
           ),
           ListTile(
@@ -492,39 +534,97 @@ class _FilesPageState extends State<FilesPage> {
         ),
       ]);
     }
+    final plain = _place == Place.drives && _crumbs.isEmpty;
+    final count = _items.length + (_loading || _next != null ? 1 : 0);
+    const spinner = Padding(
+      padding: EdgeInsets.all(20),
+      child: Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
+    );
+    if (app.grid) {
+      return GridView.builder(
+        controller: _scroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 88),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 180,
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: count,
+        itemBuilder: (context, index) {
+          if (index >= _items.length) return spinner;
+          final file = _items[index];
+          final scheme = Theme.of(context).colorScheme;
+          return Card(
+            margin: EdgeInsets.zero,
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => _open(file),
+              onLongPress: plain ? null : () => _showActions(file),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: Stack(fit: StackFit.expand, children: [
+                      _Thumb(file: file, size: 56, fill: true),
+                      if (file.isVideo)
+                        const Center(child: Icon(Icons.play_circle_fill_rounded, color: Colors.white70, size: 36)),
+                      if (file.starred)
+                        Positioned(
+                          top: 4,
+                          right: 4,
+                          child: Icon(Icons.star_rounded, size: 18, color: scheme.tertiary),
+                        ),
+                    ]),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                    child: Text(
+                      file.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
     return ListView.builder(
       controller: _scroll,
       physics: const AlwaysScrollableScrollPhysics(),
-      itemCount: _items.length + (_loading || _next != null ? 1 : 0),
+      padding: const EdgeInsets.only(bottom: 88),
+      itemCount: count,
       itemBuilder: (context, index) {
-        if (index >= _items.length) {
-          return const Padding(
-            padding: EdgeInsets.all(20),
-            child: Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
-          );
-        }
+        if (index >= _items.length) return spinner;
         final file = _items[index];
-        final scheme = Theme.of(context).colorScheme;
         final subtitle = [
           if (!file.isFolder && file.size != null) formatBytes(file.size),
           formatTime(file.modified),
         ].where((s) => s.isNotEmpty).join(' · ');
         return ListTile(
-          leading: CircleAvatar(
-            backgroundColor: scheme.primaryContainer,
-            foregroundColor: scheme.onPrimaryContainer,
-            child: Icon(file.icon),
+          leading: SizedBox(
+            width: 44,
+            height: 44,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: _Thumb(file: file, size: 24, fill: false),
+            ),
           ),
           title: Text(file.name, maxLines: 2, overflow: TextOverflow.ellipsis),
           subtitle: subtitle.isEmpty ? null : Text(subtitle),
-          trailing: _place == Place.drives && _crumbs.isEmpty
+          trailing: plain
               ? null
               : IconButton(
                   icon: Icon(file.starred ? Icons.star_rounded : Icons.more_vert_rounded),
                   onPressed: () => _showActions(file),
                 ),
           onTap: () => _open(file),
-          onLongPress: _place == Place.drives && _crumbs.isEmpty ? null : () => _showActions(file),
+          onLongPress: plain ? null : () => _showActions(file),
         );
       },
     );
@@ -556,6 +656,11 @@ class _FilesPageState extends State<FilesPage> {
                 tooltip: t('清空回收站', 'Empty trash'),
                 onPressed: _emptyTrash,
               ),
+            IconButton(
+              icon: Icon(app.grid ? Icons.view_list_rounded : Icons.grid_view_rounded),
+              tooltip: app.grid ? t('列表', 'List') : t('缩略图', 'Thumbnails'),
+              onPressed: () => app.setSetting('grid', !app.grid),
+            ),
             IconButton(
               icon: const Icon(Icons.refresh_rounded),
               tooltip: t('刷新', 'Refresh'),
@@ -599,6 +704,37 @@ class _FilesPageState extends State<FilesPage> {
               )
             : null,
       ),
+    );
+  }
+}
+
+/// A file's preview image when Drive has one, its icon otherwise.
+class _Thumb extends StatelessWidget {
+  const _Thumb({required this.file, required this.size, required this.fill});
+  final DriveFile file;
+  final double size;
+
+  /// Fill a grid cell (true) or sit in a list row (false).
+  final bool fill;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final icon = ColoredBox(
+      color: fill ? scheme.surfaceContainerHighest : scheme.primaryContainer,
+      child: Center(
+        child: Icon(file.icon, size: size, color: fill ? scheme.primary : scheme.onPrimaryContainer),
+      ),
+    );
+    final url = file.isFolder ? null : app.thumbUrl(file);
+    if (url == null) return icon;
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      cacheWidth: fill ? 360 : 132,
+      gaplessPlayback: true,
+      errorBuilder: (context, error, stack) => icon,
+      loadingBuilder: (context, child, progress) => progress == null ? child : icon,
     );
   }
 }

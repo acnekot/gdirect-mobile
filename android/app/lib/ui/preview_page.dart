@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../main.dart';
 import '../models.dart';
+import '../native.dart';
 
 /// Opens a quick look at [file]: fetched into app storage, never saved.
 Future<void> openPreview(BuildContext context, DriveFile file) => Navigator.of(context).push(
@@ -27,6 +28,8 @@ class _PreviewPageState extends State<PreviewPage> {
   bool _truncated = false;
   bool _wrap = true;
   bool _reading = false;
+  int? _pages;
+  bool _counting = false;
 
   static const _textLimit = 256 * 1024;
 
@@ -57,6 +60,7 @@ class _PreviewPageState extends State<PreviewPage> {
   void dispose() {
     final id = _id;
     if (id != null) app.endPreview(id);
+    if (widget.file.previewKind == PreviewKind.pdf) Native.pdfClose().catchError((_) {});
     super.dispose();
   }
 
@@ -79,9 +83,22 @@ class _PreviewPageState extends State<PreviewPage> {
     }
   }
 
+  Future<void> _countPages(String path) async {
+    if (_counting || _pages != null) return;
+    _counting = true;
+    try {
+      final pages = await Native.pdfPages(path);
+      if (mounted) setState(() => _pages = pages);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _startError = t('无法打开这个 PDF：$e', 'This PDF cannot be opened: $e'));
+      }
+    }
+  }
+
   Future<void> _download() async {
     try {
-      await app.download(widget.file, export: 'pdf');
+      await app.download(widget.file);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('已加入传输队列', 'Added to transfers'))));
     } catch (e) {
@@ -187,6 +204,38 @@ class _PreviewPageState extends State<PreviewPage> {
             ),
           ),
         ]);
+      case PreviewKind.pdf:
+        _countPages(item.path);
+        final pages = _pages;
+        if (pages == null) return const Center(child: CircularProgressIndicator());
+        final media = MediaQuery.of(context);
+        final width = (media.size.width * media.devicePixelRatio).round().clamp(600, 1600);
+        return ListView.builder(
+          itemCount: pages,
+          itemBuilder: (context, index) => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: FutureBuilder<String>(
+              future: Native.pdfPage(item.path, index, width),
+              builder: (context, page) {
+                if (page.hasData) {
+                  return InteractiveViewer(
+                    maxScale: 5,
+                    child: Image.file(File(page.data!), fit: BoxFit.fitWidth, gaplessPlayback: true),
+                  );
+                }
+                return AspectRatio(
+                  aspectRatio: 0.72,
+                  child: Center(
+                    child: page.hasError
+                        ? Text(t('第 ${index + 1} 页无法显示', 'Page ${index + 1} cannot be shown'))
+                        : const CircularProgressIndicator(),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      case PreviewKind.media:
       case PreviewKind.none:
         return _message(Icons.visibility_off_rounded, t('不支持快速浏览', 'No quick look for this type'), scheme.outline);
     }

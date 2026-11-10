@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gdirect_mobile/engine.dart';
 import 'package:gdirect_mobile/format.dart';
 import 'package:gdirect_mobile/models.dart';
+import 'package:gdirect_mobile/native.dart';
 
 void main() {
   test('byte sizes read naturally', () {
@@ -56,6 +57,25 @@ void main() {
     });
     expect(t.active, isTrue);
     expect(t.fraction, 0.25);
+    expect(t.direct, isFalse);
+    expect(t.wantsFd, isFalse);
+
+    final upload = TransferItem({
+      'id': 2, 'kind': 'upload', 'name': 'a', 'path': 'content://x', 'status': 'queued',
+      'done': 0, 'total': 9, 'speed': 0, 'connections': 0, 'created': 0,
+      'source': 'content://x', 'wantsFd': true,
+    });
+    expect(upload.source, 'content://x');
+    expect(upload.wantsFd, isTrue);
+  });
+
+  test('picked files and network states decode', () {
+    final file = PickedFile.from({'uri': 'content://a', 'name': 'a.txt', 'size': 3, 'path': 'x/y'});
+    expect((file.name, file.size, file.path), ('a.txt', 3, 'x/y'));
+    expect(PickedFile.from({'uri': 'u', 'name': 'n', 'size': null}).path, '');
+    final net = NetworkState.from({'id': '101', 'kind': 'wifi', 'vpn': true, 'bypassing': true});
+    expect(net.vpn && net.bypassing, isTrue);
+    expect(NetworkState.from(null).kind, 'none');
   });
 
   test('quick look picks the right kind', () {
@@ -70,5 +90,10 @@ void main() {
     expect(doc.previewExport, 'txt');
     expect(f('s', 'application/vnd.google-apps.spreadsheet').previewExport, 'csv');
     expect(f('p', 'application/vnd.google-apps.presentation').previewKind, PreviewKind.none);
+    expect(f('a.mp4', 'video/mp4').previewKind, PreviewKind.media);
+    expect(f('a.mkv', 'application/octet-stream').previewKind, PreviewKind.media);
+    expect(f('a.mkv', 'application/octet-stream').mediaMime, 'video/*');
+    expect(f('a.flac', 'audio/flac').previewKind, PreviewKind.media);
+    expect(f('a.pdf', 'application/pdf').previewKind, PreviewKind.pdf);
   });
 }

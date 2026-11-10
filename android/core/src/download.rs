@@ -239,6 +239,17 @@ impl Fetcher {
     /// GET `url` (optionally one byte range); returns the answer and the
     /// address it finally came from.
     fn get(&mut self, url: &Url, range: Option<(u64, u64)>) -> Result<(Response, Url)> {
+        let range = range.map(|(first, last)| format!("bytes={first}-{last}"));
+        self.get_raw(url, range.as_deref(), false)
+    }
+    /// `get` with a verbatim Range header. `everywhere` also sends the token
+    /// to Google's content hosts, which thumbnails of private files need.
+    fn get_raw(
+        &mut self,
+        url: &Url,
+        range: Option<&str>,
+        everywhere: bool,
+    ) -> Result<(Response, Url)> {
         let mut current = url.clone();
         for _ in 0..8 {
             if !(self.allow)(&current) {
@@ -246,7 +257,10 @@ impl Fetcher {
             }
             let host = current.host_str().unwrap_or_default().to_owned();
             let target = api::gate(self.route.forged.as_deref(), &current);
-            let token = self.token.clone().filter(|_| api_host(&host));
+            let token = self
+                .token
+                .clone()
+                .filter(|_| api_host(&host) || (everywhere && host.ends_with(".googleusercontent.com")));
             let mut request = self
                 .client(&host)?
                 .get(target)
@@ -254,8 +268,8 @@ impl Fetcher {
             if let Some(token) = token {
                 request = request.bearer_auth(token);
             }
-            if let Some((first, last)) = range {
-                request = request.header(header::RANGE, format!("bytes={first}-{last}"));
+            if let Some(range) = range {
+                request = request.header(header::RANGE, range);
             }
             let response = request.send().map_err(from_reqwest)?;
             if response.status().is_redirection() {
@@ -675,6 +689,64 @@ fn stream(
     Ok(OK)
 }
 
+/// Where a stream comes from: the endpoint, its TLS identity and the token.
+#[derive(Clone)]
+pub struct Origin {
+    pub ip: Option<IpAddr>,
+    pub sni: Option<String>,
+    /// Try the other TLS identity when the connection fails.
+    pub auto: bool,
+    pub token: String,
+}
+fn open_with(
+    origin: &Origin,
+    url: &Url,
+    range: Option<&str>,
+    everywhere: bool,
+    allow: fn(&Url) -> bool,
+) -> Result<Response> {
+    let mut sni = origin.sni.clone();
+    let mut last = None;
+    for attempt in 0..2 {
+        let mut fetcher = Fetcher::new(
+            Route::new(origin.ip, sni.as_deref()),
+            Some(origin.token.clone()),
+            allow,
+        );
+        // A stream is read for as long as the player wants it.
+        fetcher.timeout = None;
+        match fetcher.get_raw(url, range, everywhere) {
+            Ok((response, _)) => return Ok(response),
+            Err(error) => {
+                let retry = attempt == 0
+                    && origin.auto
+                    && origin.ip.is_some()
+                    && transport(code_of(&error));
+                last = Some(error);
+                if !retry {
+                    break;
+                }
+                sni = match &sni {
+                    Some(_) => None,
+                    None => Some(crate::api::FORGED_HOST.to_owned()),
+                };
+            }
+        }
+    }
+    Err(last.expect("at least one attempt"))
+}
+/// Opens a Drive file, or the byte `range` of it (a verbatim Range header
+/// such as `bytes=100-`), as a stream. The caller reads the status: 200, 206
+/// or an error from Drive.
+pub fn open(origin: &Origin, file: &str, range: Option<&str>) -> Result<Response> {
+    let url = drive::FileRef::parse(file)?.url(true, None)?;
+    open_with(origin, &url, range, false, allowed_url)
+}
+/// Fetches a Google-hosted URL that belongs to a Drive file, such as its
+/// thumbnail.
+pub fn fetch(origin: &Origin, url: &Url) -> Result<Response> {
+    open_with(origin, url, None, true, allowed_url)
+}
 fn control_path(output: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gdl", output.display()))
 }

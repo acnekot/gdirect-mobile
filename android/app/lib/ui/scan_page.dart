@@ -104,8 +104,8 @@ class _ScanPageState extends State<ScanPage> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    t('如果你开着 Clash、sing-box 等 VPN / 代理，请在它的“分应用代理”里让 gdirect 不走代理（绕过），否则扫描和下载都会被代理接管，得不到真正的直连结果。',
-                        'If a VPN/proxy app (Clash, sing-box…) is on, exclude gdirect in its per-app settings, or the scan and downloads are captured by the proxy instead of going direct.'),
+                    t('开着 VPN / 代理时，“设置 → 绕过 VPN 直连”会让本应用改走真实网络。如果 VPN 开了“始终开启并阻止无 VPN 的连接”，这个办法会失效，请改在 VPN 的分应用设置里让 gdirect 绕过。',
+                        'With a VPN on, “Settings → Go around a VPN” sends this app over the real network. If the VPN is set to always-on with “block connections without VPN”, that cannot work: exclude gdirect in the VPN’s per-app settings instead.'),
                     style: TextStyle(color: scheme.onTertiaryContainer),
                   ),
                 ),

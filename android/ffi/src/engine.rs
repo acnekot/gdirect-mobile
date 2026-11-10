@@ -4,22 +4,24 @@
 //! gets `{"ok": …}` or `{"error": …}` back. Anything that takes long
 //! (sign-in, scans, transfers) runs on its own thread here and is polled.
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use crate::serve;
 use gdirect_core::{
     api::{self, Api, Owner, Query, SearchKind, SearchSpec},
-    auth, download, netif, ranges, scan,
+    auth, broker, download, netif, ranges, scan,
     store::Store,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const SHORTCUT: &str = "application/vnd.google-apps.shortcut";
@@ -59,6 +61,7 @@ fn init(args: &Value) -> Result<Value> {
     }
     let engine = Arc::new(Engine::new(dir)?);
     let _ = ENGINE.set(engine.clone());
+    engine.restart_server();
     engine.handle("state", &Value::Null)
 }
 
@@ -103,6 +106,16 @@ struct Record {
     /// not held back by the parallel limit.
     #[serde(default)]
     preview: bool,
+    /// The download was written straight to its final, public place.
+    #[serde(default)]
+    direct: bool,
+    /// Folder below Downloads/gdirect the file belongs in (folder downloads).
+    #[serde(default)]
+    subdir: Option<String>,
+    /// Upload: the document URI the data is read from; the app opens it and
+    /// hands over a descriptor each time the upload runs.
+    #[serde(default)]
+    source: Option<String>,
 }
 #[derive(Default, Clone, Copy)]
 struct Live {
@@ -114,6 +127,8 @@ struct Transfer {
     rec: Mutex<Record>,
     live: Mutex<Live>,
     cancel: Mutex<Arc<AtomicBool>>,
+    /// An open descriptor of the upload source, owned by the app.
+    fd: Mutex<Option<i32>>,
 }
 impl Transfer {
     fn new(rec: Record) -> Arc<Self> {
@@ -124,6 +139,7 @@ impl Transfer {
             }),
             rec: Mutex::new(rec),
             cancel: Mutex::default(),
+            fd: Mutex::new(None),
         })
     }
     fn json(&self) -> Value {
@@ -134,7 +150,10 @@ impl Transfer {
             "size": rec.size, "path": rec.path, "created": rec.created,
             "status": rec.status, "done": rec.done, "error": rec.error,
             "saved": rec.saved, "remoteId": rec.remote_id, "export": rec.export,
-            "preview": rec.preview,
+            "preview": rec.preview, "direct": rec.direct, "subdir": rec.subdir,
+            "source": rec.source,
+            "wantsFd": rec.status == "queued" && rec.source.is_some()
+                && self.fd.lock().unwrap().is_none(),
             "total": if live.total > 0 { live.total } else { rec.size },
             "speed": if running { live.speed } else { 0 },
             "connections": if running { live.connections } else { 0 },
@@ -147,34 +166,6 @@ impl Transfer {
         if status != "running" {
             self.live.lock().unwrap().speed = 0;
         }
-    }
-}
-
-/// Limits how many transfers run at once.
-#[derive(Default)]
-struct Slots {
-    running: Mutex<usize>,
-    wake: Condvar,
-}
-impl Slots {
-    fn acquire(&self, limit: usize, cancel: &AtomicBool) -> bool {
-        let mut running = self.running.lock().unwrap();
-        while *running >= limit {
-            if cancel.load(Ordering::Relaxed) {
-                return false;
-            }
-            running = self
-                .wake
-                .wait_timeout(running, Duration::from_millis(400))
-                .unwrap()
-                .0;
-        }
-        *running += 1;
-        true
-    }
-    fn release(&self) {
-        *self.running.lock().unwrap() -= 1;
-        self.wake.notify_all();
     }
 }
 
@@ -205,15 +196,22 @@ struct ScanJob {
     cancel: AtomicBool,
 }
 
-struct Engine {
-    dir: PathBuf,
+pub(crate) struct Engine {
+    pub(crate) dir: PathBuf,
     db: PathBuf,
     api: Mutex<Option<Api>>,
     transfers: Mutex<Vec<Arc<Transfer>>>,
     next_id: AtomicU64,
-    slots: Slots,
+    /// Transfers running now, against the parallel limit.
+    running: Mutex<usize>,
     login: Mutex<Option<Arc<Login>>>,
     scan: Mutex<Option<Arc<ScanJob>>>,
+    /// Guards the local server's file and thumbnail addresses.
+    pub(crate) secret: String,
+    server: Mutex<Option<serve::Server>>,
+    pub(crate) dav: serve::DavState,
+    /// File metadata for streams, so each range request does not ask Drive.
+    metas: Mutex<HashMap<String, (Instant, api::File)>>,
 }
 
 impl Engine {
@@ -229,10 +227,16 @@ impl Engine {
             api: Mutex::new(None),
             transfers: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
-            slots: Slots::default(),
+            running: Mutex::new(0),
             login: Mutex::new(None),
             scan: Mutex::new(None),
+            secret: serve::random_hex(16)?,
+            server: Mutex::new(None),
+            dav: serve::DavState::default(),
+            metas: Mutex::default(),
         };
+        // Leftovers of quick looks and WebDAV uploads cut short by a restart.
+        let _ = fs::remove_dir_all(engine.dir.join("dav-tmp"));
         engine.load_transfers();
         Ok(engine)
     }
@@ -240,7 +244,45 @@ impl Engine {
     fn store(&self) -> Result<Store> {
         Store::open(&self.db)
     }
-    fn setting(&self, key: &str, default: i64) -> i64 {
+    pub(crate) fn setting_text(&self, key: &str) -> Option<String> {
+        self.store().ok().and_then(|db| db.setting(key).ok().flatten())
+    }
+    /// The endpoint, identity and token a stream is fetched with; `fresh`
+    /// asks Google for a new token instead of the cached one.
+    pub(crate) fn origin(&self, fresh: bool) -> Result<download::Origin> {
+        let api = self.api()?;
+        let token = if fresh { api.download_token()? } else { api.token()? };
+        let (ip, sni, _) = api.route();
+        Ok(download::Origin { ip, sni, auto: true, token })
+    }
+    pub(crate) fn meta(&self, id: &str) -> Result<api::File> {
+        if let Some((at, file)) = self.metas.lock().unwrap().get(id) {
+            if at.elapsed() < Duration::from_secs(600) {
+                return Ok(file.clone());
+            }
+        }
+        let file = self.api()?.metadata(id)?;
+        let mut metas = self.metas.lock().unwrap();
+        if metas.len() > 500 {
+            metas.clear();
+        }
+        metas.insert(id.to_owned(), (Instant::now(), file.clone()));
+        Ok(file)
+    }
+    /// (Re)starts the local server with the current settings.
+    fn restart_server(self: &Arc<Self>) {
+        let lan = self.setting("mobile_webdav", 0) != 0 && self.setting("mobile_webdav_lan", 0) != 0;
+        let mut server = self.server.lock().unwrap();
+        if server.as_ref().is_some_and(|s| s.lan == lan) {
+            return;
+        }
+        // Free the port before binding it again.
+        if server.take().is_some() {
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        *server = serve::start(self, lan).ok();
+    }
+    pub(crate) fn setting(&self, key: &str, default: i64) -> i64 {
         self.store()
             .ok()
             .and_then(|db| db.setting(key).ok().flatten())
@@ -252,7 +294,7 @@ impl Engine {
     }
     /// A client for the signed-in account, over the fastest verified Google
     /// front end when direct mode is on and the scan found one.
-    fn api(&self) -> Result<Api> {
+    pub(crate) fn api(&self) -> Result<Api> {
         if let Some(api) = self.api.lock().unwrap().clone() {
             return Ok(api);
         }
@@ -291,8 +333,11 @@ impl Engine {
                 }
                 Value::Null
             }
+            "server_login" => self.server_login(args)?,
             "logout" => {
-                let removed = self.store()?.remove_account(text(args, "email")?)?;
+                let db = self.store()?;
+                let _ = broker::forget(&db, text(args, "email")?);
+                let removed = db.remove_account(text(args, "email")?)?;
                 self.reset_api();
                 json!(removed)
             }
@@ -347,7 +392,22 @@ impl Engine {
                     .set_starred(text(args, "id")?, args["on"].as_bool().unwrap_or(true))?,
             )?,
             "download" => self.add_download(args)?,
+            "download_folder" => self.download_folder(args)?,
             "upload" => self.add_upload(args)?,
+            "transfer_fd" => {
+                let t = self.transfer(args)?;
+                *t.fd.lock().unwrap() = Some(args["fd"].as_i64().context("missing fd")? as i32);
+                self.pump();
+                Value::Null
+            }
+            "transfer_fail" => {
+                let t = self.transfer(args)?;
+                if t.rec.lock().unwrap().status == "queued" {
+                    t.set("failed", Some(text(args, "error")?.to_owned()));
+                    self.save_transfers();
+                }
+                Value::Null
+            }
             "transfers" => json!(
                 self.transfers
                     .lock()
@@ -357,7 +417,17 @@ impl Engine {
                     .collect::<Vec<_>>()
             ),
             "transfer_cancel" => {
-                self.transfer(args)?.cancel.lock().unwrap().store(true, Ordering::Relaxed);
+                let t = self.transfer(args)?;
+                t.cancel.lock().unwrap().store(true, Ordering::Relaxed);
+                // Nothing is running yet for a queued transfer to notice.
+                let waiting = {
+                    let rec = t.rec.lock().unwrap();
+                    rec.status == "queued" && !rec.preview
+                };
+                if waiting {
+                    t.set("cancelled", None);
+                    self.save_transfers();
+                }
                 Value::Null
             }
             "transfer_retry" => {
@@ -378,15 +448,18 @@ impl Engine {
             }
             "transfer_saved" => {
                 let t = self.transfer(args)?;
-                {
+                let direct = {
                     let mut rec = t.rec.lock().unwrap();
                     rec.saved = Some(text(args, "uri")?.to_owned());
-                }
-                // The data now lives at its final place: drop the staging copy.
-                let path = PathBuf::from(&t.rec.lock().unwrap().path);
-                download::discard(&path);
-                if let Some(dir) = path.parent() {
-                    let _ = fs::remove_dir(dir);
+                    rec.direct
+                };
+                if !direct {
+                    // The data now lives at its final place: drop the staging copy.
+                    let path = PathBuf::from(&t.rec.lock().unwrap().path);
+                    download::discard(&path);
+                    if let Some(dir) = path.parent() {
+                        let _ = fs::remove_dir(dir);
+                    }
                 }
                 self.save_transfers();
                 Value::Null
@@ -422,11 +495,24 @@ impl Engine {
     fn state(&self) -> Result<Value> {
         let db = self.store()?;
         let account = db.resolve_account(None).ok().flatten();
-        let client = auth::saved_client(&db, account.as_deref())?;
+        let client = auth::saved_client(&db, account.as_deref())
+            .ok()
+            .flatten()
+            .filter(|c| c.client_id != broker::PLACEHOLDER_CLIENT);
         let routes = scan::usable(db.routes(16)?, &ranges::current(&db)).len();
+        let accounts = db.accounts()?;
+        let via_server: Vec<&String> = accounts
+            .iter()
+            .filter(|a| broker::saved(&db, a).ok().flatten().is_some())
+            .collect();
+        let (port, lan) = match self.server.lock().unwrap().as_ref() {
+            Some(server) => (Some(server.port), server.lan),
+            None => (None, false),
+        };
         Ok(json!({
             "dataDir": self.dir,
-            "accounts": db.accounts()?,
+            "accounts": accounts,
+            "serverAccounts": via_server,
             "account": account,
             "client": client.map(|c| json!({"id": c.client_id})),
             "routes": routes,
@@ -434,14 +520,42 @@ impl Engine {
                 "connections": self.setting("connections", 8).clamp(1, 16),
                 "parallel": self.setting("mobile_parallel", 2).clamp(1, 4),
                 "direct": self.setting("mobile_direct", 1) != 0,
+                "bypassVpn": self.setting("mobile_bypass_vpn", 1) != 0,
+                "autoScan": self.setting("mobile_auto_scan", 1) != 0,
+                "grid": self.setting("mobile_grid", 0) != 0,
+                "webdav": self.setting("mobile_webdav", 0) != 0,
+                "webdavLan": self.setting("mobile_webdav_lan", 0) != 0,
+            },
+            "server": {
+                "port": port, "secret": self.secret, "lan": lan,
+                "webdavPassword": self.setting_text("mobile_webdav_password"),
             },
             "version": env!("CARGO_PKG_VERSION"),
         }))
     }
 
-    fn set_setting(&self, key: &str, value: &Value) -> Result<Value> {
+    fn set_setting(self: &Arc<Self>, key: &str, value: &Value) -> Result<Value> {
         let db = self.store()?;
+        let flag = |name: &str| -> Result<()> {
+            db.set(name, if value.as_bool().context("bool")? { "1" } else { "0" })
+        };
         match key {
+            "bypassVpn" => flag("mobile_bypass_vpn")?,
+            "autoScan" => flag("mobile_auto_scan")?,
+            "grid" => flag("mobile_grid")?,
+            "webdav" | "webdavLan" => {
+                flag(if key == "webdav" { "mobile_webdav" } else { "mobile_webdav_lan" })?;
+                if db.setting("mobile_webdav_password")?.is_none() {
+                    db.set("mobile_webdav_password", &serve::random_hex(6)?)?;
+                }
+                self.restart_server();
+            }
+            "webdavPassword" => {
+                let password = value.as_str().context("text")?.trim();
+                ensure!(password.len() >= 6, "use at least 6 characters");
+                ensure!(!password.contains(':'), "the password cannot contain a colon");
+                db.set("mobile_webdav_password", password)?;
+            }
             "connections" => db.set("connections", &value.as_i64().context("number")?.clamp(1, 16).to_string())?,
             "parallel" => db.set("mobile_parallel", &value.as_i64().context("number")?.clamp(1, 4).to_string())?,
             "direct" => db.set("mobile_direct", if value.as_bool().context("bool")? { "1" } else { "0" })?,
@@ -515,6 +629,49 @@ impl Engine {
         }
     }
 
+    /// Signs in through the person's own token server instead of Google's
+    /// pages: the server holds the refresh token, this app only gets access
+    /// tokens from it.
+    fn server_login(&self, args: &Value) -> Result<Value> {
+        let server = broker::Broker {
+            url: broker::normalise(text(args, "url")?)?,
+            key: text(args, "key")?.trim().to_owned(),
+        };
+        ensure!(!server.key.is_empty(), "enter the access key of the server");
+        let reply = broker::fetch(&server)?;
+        // Ask Drive itself whose token this is, over the usual route.
+        let db = self.store()?;
+        let previous = self.api.lock().unwrap().take();
+        let probe = match previous {
+            Some(api) => api,
+            None => {
+                let direct = self.setting("mobile_direct", 1) != 0;
+                let route = if direct {
+                    scan::usable(db.routes(1)?, &ranges::current(&db)).into_iter().next()
+                } else {
+                    None
+                };
+                match route {
+                    Some(r) => Api::new(self.db.clone(), None, Some(r.ip), (!r.sni.is_empty()).then_some(r.sni), true)?,
+                    None => Api::new(self.db.clone(), None, None, None, true)?,
+                }
+            }
+        };
+        let email = match probe.email_of(&reply.access_token) {
+            Ok(email) => email,
+            // Drive may be out of reach before the first scan: trust the server.
+            Err(error) => reply.email.clone().with_context(|| {
+                format!("the token works on the server, but Drive could not be asked whose it is: {error:#}")
+            })?,
+        };
+        db.save_account(&email, broker::PLACEHOLDER)?;
+        broker::save(&db, &email, &server)?;
+        db.save_token(&email, &reply.access_token, reply.expires_in)?;
+        db.set_default_account(&email)?;
+        self.reset_api();
+        Ok(json!({"email": email}))
+    }
+
     // ---- browsing ------------------------------------------------------
 
     fn list(&self, args: &Value) -> Result<Value> {
@@ -580,7 +737,7 @@ impl Engine {
                 .context("shortcut without a target")?;
             file = api.metadata(&target)?;
         }
-        ensure!(!file.folder(), "folders cannot be downloaded; open the folder and pick files");
+        ensure!(!file.folder(), "this is a folder; use “Download folder”");
         ensure!(file.downloadable(), "Google cannot export this kind of file");
         let preview = args["preview"].as_bool().unwrap_or(false);
         if preview && !file.workspace() {
@@ -591,8 +748,33 @@ impl Engine {
                 size >> 20
             );
         }
+        let rec = self.record_for(&file, opt(args, "export"), preview, opt(args, "dir"), None);
+        let t = Transfer::new(rec);
+        let out = t.json();
+        self.transfers.lock().unwrap().push(t.clone());
+        self.start(t);
+        Ok(out)
+    }
+    /// The download record for `file`. With `dir` (a public folder the app
+    /// may write to) the data goes straight there as `<name>.part` and is
+    /// renamed when complete; otherwise it is staged in the app's storage.
+    fn record_for(
+        &self,
+        file: &api::File,
+        export: Option<&str>,
+        preview: bool,
+        dir: Option<&str>,
+        subdir: Option<&str>,
+    ) -> Record {
         let (export, name) = if file.workspace() {
-            let (mime, ext) = match opt(args, "export").unwrap_or("pdf") {
+            let kind = file.mime_type.strip_prefix("application/vnd.google-apps.").unwrap_or("");
+            let native = match kind {
+                "document" => "docx",
+                "spreadsheet" => "xlsx",
+                "presentation" => "pptx",
+                _ => "pdf",
+            };
+            let (mime, ext) = match export.unwrap_or(native) {
                 "txt" => ("text/plain", "txt"),
                 "csv" => ("text/csv", "csv"),
                 "docx" => (
@@ -615,11 +797,23 @@ impl Engine {
         };
         let id = self.new_id();
         let safe = api::safe_name(&name);
-        let path = self.dir.join("transfers").join(id.to_string()).join(&safe);
-        let rec = Record {
+        let staged = self.dir.join("transfers").join(id.to_string()).join(&safe);
+        let public = (!preview)
+            .then(|| dir.and_then(|dir| public_target(Path::new(dir), subdir, &safe)))
+            .flatten();
+        let (path, name, direct) = match public {
+            Some(path) => {
+                let name = path
+                    .file_name()
+                    .map_or(safe.clone(), |n| n.to_string_lossy().into_owned());
+                (path, name, true)
+            }
+            None => (staged, safe, false),
+        };
+        Record {
             id,
             kind: "download".into(),
-            name: safe,
+            name,
             file_id: file.id.clone(),
             size: file.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
             md5: file.md5_checksum.clone(),
@@ -628,58 +822,149 @@ impl Engine {
             created: gdirect_core::store::now(),
             status: "queued".into(),
             preview,
+            direct,
+            subdir: subdir.map(str::to_owned),
             ..Record::default()
+        }
+    }
+    /// Queues every file below a folder, keeping the folder structure.
+    fn download_folder(self: &Arc<Self>, args: &Value) -> Result<Value> {
+        const LIMIT: usize = 2000;
+        let api = self.api()?;
+        let top = api.metadata(text(args, "id")?)?;
+        let top_id = match (&top.shortcut_details, top.mime_type == SHORTCUT) {
+            (Some(details), true) => details.target_id.clone(),
+            _ => top.id.clone(),
         };
-        self.enqueue(rec)
+        let dir = opt(args, "dir");
+        let mut pending = vec![(top_id, api::safe_name(&top.name))];
+        let mut records = Vec::new();
+        let mut skipped = 0usize;
+        while let Some((folder, path)) = pending.pop() {
+            for file in api.query_all(&Query::folder(&folder, top.drive_id.as_deref()))? {
+                if file.trashed {
+                    continue;
+                }
+                if file.folder() {
+                    pending.push((file.id.clone(), format!("{path}/{}", api::safe_name(&file.name))));
+                } else if file.mime_type == SHORTCUT || !file.downloadable() {
+                    skipped += 1;
+                } else {
+                    ensure!(
+                        records.len() < LIMIT,
+                        "this folder has more than {LIMIT} files; download its subfolders one at a time"
+                    );
+                    records.push(self.record_for(&file, None, false, dir, Some(&path)));
+                }
+            }
+        }
+        let count = records.len();
+        {
+            let mut list = self.transfers.lock().unwrap();
+            for rec in records {
+                list.push(Transfer::new(rec));
+            }
+        }
+        self.save_transfers();
+        self.pump();
+        Ok(json!({"count": count, "skipped": skipped}))
     }
     fn add_upload(self: &Arc<Self>, args: &Value) -> Result<Value> {
-        let source = PathBuf::from(text(args, "path")?);
-        let meta = fs::metadata(&source).context("cannot read the file to upload")?;
-        ensure!(meta.is_file(), "only files can be uploaded");
-        let name = opt(args, "name")
-            .map(str::to_owned)
-            .or_else(|| source.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .context("file has no name")?;
+        let source = opt(args, "uri").map(str::to_owned);
+        let (path, size, name) = match &source {
+            // A document the app opens for us when the upload's turn comes.
+            Some(uri) => (
+                uri.clone(),
+                args["size"].as_u64().unwrap_or(0),
+                text(args, "name")?.to_owned(),
+            ),
+            None => {
+                let file = PathBuf::from(text(args, "path")?);
+                let meta = fs::metadata(&file).context("cannot read the file to upload")?;
+                ensure!(meta.is_file(), "only files can be uploaded");
+                let name = opt(args, "name")
+                    .map(str::to_owned)
+                    .or_else(|| file.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .context("file has no name")?;
+                (file.to_string_lossy().into_owned(), meta.len(), name)
+            }
+        };
         let rec = Record {
             id: self.new_id(),
             kind: "upload".into(),
             name,
             file_id: text(args, "parent")?.to_owned(),
-            size: meta.len(),
-            path: source.to_string_lossy().into_owned(),
+            size,
+            path,
             cleanup: args["cleanup"].as_bool().unwrap_or(false),
             created: gdirect_core::store::now(),
             status: "queued".into(),
+            source,
             ..Record::default()
         };
-        self.enqueue(rec)
-    }
-    fn enqueue(self: &Arc<Self>, rec: Record) -> Result<Value> {
         let t = Transfer::new(rec);
         let out = t.json();
         self.transfers.lock().unwrap().push(t.clone());
         self.start(t);
         Ok(out)
     }
+    /// Puts a transfer (back) in the queue.
     fn start(self: &Arc<Self>, t: Arc<Transfer>) {
         let cancel = Arc::new(AtomicBool::new(false));
         *t.cancel.lock().unwrap() = cancel.clone();
         t.set("queued", None);
         self.save_transfers();
-        let me = self.clone();
-        std::thread::spawn(move || me.run_transfer(t, cancel));
+        if t.rec.lock().unwrap().preview {
+            // Quick looks are small and wanted now: they do not wait in line.
+            t.set("running", None);
+            let me = self.clone();
+            std::thread::spawn(move || me.run_transfer(t, cancel));
+        } else {
+            self.pump();
+        }
+    }
+    /// Starts queued transfers, oldest first, up to the parallel limit.
+    fn pump(self: &Arc<Self>) {
+        loop {
+            let limit = self.setting("mobile_parallel", 2).clamp(1, 4) as usize;
+            let next = {
+                let mut running = self.running.lock().unwrap();
+                if *running >= limit {
+                    return;
+                }
+                let list = self.transfers.lock().unwrap();
+                let next = list
+                    .iter()
+                    .find(|t| {
+                        let rec = t.rec.lock().unwrap();
+                        rec.status == "queued"
+                            && !rec.preview
+                            // An upload from a document waits for the app to open it.
+                            && (rec.source.is_none() || t.fd.lock().unwrap().is_some())
+                    })
+                    .cloned();
+                if let Some(t) = &next {
+                    t.set("running", None);
+                    *running += 1;
+                }
+                next
+            };
+            let Some(t) = next else { return };
+            let cancel = t.cancel.lock().unwrap().clone();
+            let me = self.clone();
+            std::thread::spawn(move || {
+                me.run_transfer(t, cancel);
+                *me.running.lock().unwrap() -= 1;
+                me.pump();
+            });
+        }
     }
     fn run_transfer(&self, t: Arc<Transfer>, cancel: Arc<AtomicBool>) {
-        let limit = self.setting("mobile_parallel", 2).clamp(1, 4) as usize;
-        let preview = t.rec.lock().unwrap().preview;
-        if !preview && !self.slots.acquire(limit, &cancel) {
-            t.set("cancelled", None);
-            self.save_transfers();
-            return;
-        }
-        t.set("running", None);
         let kind = t.rec.lock().unwrap().kind.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("cancelled");
+            }
             if kind == "download" {
                 self.do_download(&t, &cancel)
             } else {
@@ -687,9 +972,8 @@ impl Engine {
             }
         }))
         .unwrap_or_else(|_| Err(anyhow!("transfer crashed")));
-        if !preview {
-            self.slots.release();
-        }
+        // The descriptor belongs to this run; the app closes it.
+        *t.fd.lock().unwrap() = None;
         match result {
             Ok(()) => t.set("done", None),
             Err(_) if cancel.load(Ordering::Relaxed) => t.set("cancelled", None),
@@ -702,9 +986,14 @@ impl Engine {
         let api = self.api()?;
         let token = api.download_token()?;
         let (ip, sni, backups) = api.route();
+        let target = PathBuf::from(&rec.path);
+        let output = partial(&rec);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).context("cannot create the download folder")?;
+        }
         let args = download::Args {
             file: rec.file_id.clone(),
-            output: PathBuf::from(&rec.path),
+            output: output.clone(),
             ip,
             sni,
             auto: true,
@@ -736,6 +1025,9 @@ impl Engine {
             drop(progress);
         });
         outcome?;
+        if output != target {
+            fs::rename(&output, &target).context("cannot give the download its final name")?;
+        }
         let mut rec = t.rec.lock().unwrap();
         let size = fs::metadata(&rec.path).map(|m| m.len()).unwrap_or(rec.size);
         rec.size = size;
@@ -746,15 +1038,17 @@ impl Engine {
     fn do_upload(&self, t: &Transfer, cancel: &Arc<AtomicBool>) -> Result<()> {
         let rec = t.rec.lock().unwrap().clone();
         let api = self.api()?.cancellable(cancel.clone());
-        let file = api.upload_with(
-            Path::new(&rec.path),
-            &rec.file_id,
-            Some(&rec.name),
-            |done, total| {
-                t.rec.lock().unwrap().done = done;
-                t.live.lock().unwrap().total = total;
-            },
-        )?;
+        let progress = |done, total| {
+            t.rec.lock().unwrap().done = done;
+            t.live.lock().unwrap().total = total;
+        };
+        let file = match &rec.source {
+            Some(uri) => {
+                let fd = (*t.fd.lock().unwrap()).context("the file must be picked again")?;
+                api.upload_handle(duplicate(fd)?, uri, &rec.file_id, &rec.name, progress)?
+            }
+            None => api.upload_with(Path::new(&rec.path), &rec.file_id, Some(&rec.name), progress)?,
+        };
         t.rec.lock().unwrap().remote_id = Some(file.id);
         if rec.cleanup {
             let _ = fs::remove_file(&rec.path);
@@ -766,10 +1060,17 @@ impl Engine {
         t.cancel.lock().unwrap().store(true, Ordering::Relaxed);
         let rec = t.rec.lock().unwrap().clone();
         if rec.kind == "download" {
-            let path = PathBuf::from(&rec.path);
-            download::discard(&path);
-            if let Some(dir) = path.parent().filter(|d| d.starts_with(self.dir.join("transfers"))) {
-                let _ = fs::remove_dir(dir);
+            if rec.direct {
+                // A finished file is the person's now; only partial data goes.
+                if rec.status != "done" {
+                    download::discard(&partial(&rec));
+                }
+            } else {
+                let path = PathBuf::from(&rec.path);
+                download::discard(&path);
+                if let Some(dir) = path.parent().filter(|d| d.starts_with(self.dir.join("transfers"))) {
+                    let _ = fs::remove_dir(dir);
+                }
             }
         } else if rec.cleanup && rec.status != "done" {
             let _ = fs::remove_file(&rec.path);
@@ -905,6 +1206,61 @@ impl Engine {
     }
 }
 
+/// Where a direct download is written until it is complete.
+fn partial(rec: &Record) -> PathBuf {
+    if rec.direct {
+        PathBuf::from(format!("{}.part", rec.path))
+    } else {
+        PathBuf::from(&rec.path)
+    }
+}
+/// A free file name in the public download folder, or None when the app may
+/// not write there (then the download is staged in the app's own storage).
+fn public_target(dir: &Path, subdir: Option<&str>, name: &str) -> Option<PathBuf> {
+    let mut folder = dir.to_path_buf();
+    for part in subdir.unwrap_or_default().split('/').filter(|p| !p.is_empty() && *p != "." && *p != "..") {
+        folder.push(part);
+    }
+    fs::create_dir_all(&folder).ok()?;
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
+    };
+    for n in 0..1000 {
+        let candidate = if n == 0 {
+            folder.join(name)
+        } else {
+            folder.join(format!("{stem} ({n}){ext}"))
+        };
+        let part = PathBuf::from(format!("{}.part", candidate.display()));
+        if candidate.exists() || part.exists() {
+            continue;
+        }
+        // Prove the folder is writable, and reserve nothing: the downloader
+        // must find no file there.
+        fs::File::create(&part).ok()?;
+        fs::remove_file(&part).ok()?;
+        return Some(candidate);
+    }
+    None
+}
+/// Our own handle on a descriptor the app keeps open.
+fn duplicate(fd: i32) -> Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::BorrowedFd;
+        ensure!(fd >= 0, "invalid file descriptor");
+        // SAFETY: the app keeps `fd` open until the transfer has ended.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        Ok(fs::File::from(borrowed.try_clone_to_owned().context("cannot read the picked file")?))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fd;
+        bail!("picked documents are only supported on Android")
+    }
+}
+
 fn page(page: api::Page) -> Result<Value> {
     Ok(json!({
         "files": serde_json::to_value(&page.files)?,
@@ -997,5 +1353,71 @@ mod tests {
         let r = reply("transfer_remove", json!({"id": 7}));
         assert!(r["ok"].is_null(), "{r}");
         assert!(reply("transfers", Value::Null)["ok"].as_array().unwrap().is_empty());
+
+        // An upload from a document waits for its descriptor, and can be
+        // cancelled while it waits.
+        let r = reply(
+            "upload",
+            json!({"uri": "content://docs/1", "name": "a.bin", "size": 5, "parent": "root"}),
+        );
+        let id = r["ok"]["id"].as_u64().unwrap();
+        let list = reply("transfers", Value::Null);
+        assert_eq!(list["ok"][0]["status"], "queued");
+        assert_eq!(list["ok"][0]["wantsFd"], true);
+        reply("transfer_cancel", json!({"id": id}));
+        assert_eq!(reply("transfers", Value::Null)["ok"][0]["status"], "cancelled");
+        reply("transfer_remove", json!({"id": id}));
+
+        // The local server: secret paths only, WebDAV off until switched on.
+        let state = reply("state", Value::Null);
+        let port = state["ok"]["server"]["port"].as_u64().unwrap() as u16;
+        let secret = state["ok"]["server"]["secret"].as_str().unwrap().to_owned();
+        assert_eq!(secret.len(), 32);
+        let get = |path: &str, extra: &str| -> String {
+            use std::io::{Read, Write};
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(stream, "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}\r\n").unwrap();
+            let mut out = String::new();
+            let _ = stream.read_to_string(&mut out);
+            out
+        };
+        assert!(get("/", "").starts_with("HTTP/1.1 404"));
+        assert!(get("/wrong/file/abc/x", "").starts_with("HTTP/1.1 404"));
+        // Right secret, but nobody is signed in.
+        assert!(get(&format!("/{secret}/file/abcdefghij/x"), "").starts_with("HTTP/1.1 401"));
+        assert!(get("/dav/", "").starts_with("HTTP/1.1 404"));
+        reply("set", json!({"key": "webdav", "value": true}));
+        let state = reply("state", Value::Null);
+        let password = state["ok"]["server"]["webdavPassword"].as_str().unwrap().to_owned();
+        assert_eq!(password.len(), 12);
+        assert!(get("/dav/", "").starts_with("HTTP/1.1 401"));
+        assert!(get("/dav/", "Authorization: Basic eDp3cm9uZw==\r\n").starts_with("HTTP/1.1 401"));
+        use base64::Engine as _;
+        let auth = base64::engine::general_purpose::STANDARD.encode(format!("me:{password}"));
+        // Authorised, and then stopped by the missing account, not by the door.
+        let r = get("/dav/", &format!("Authorization: Basic {auth}\r\n"));
+        assert!(r.starts_with("HTTP/1.1 405") || r.starts_with("HTTP/1.1 401 ") && r.contains("not signed in"), "{r}");
+        reply("set", json!({"key": "webdav", "value": false}));
+    }
+
+    #[test]
+    fn public_downloads_get_free_names() {
+        let dir = scratch("public");
+        let a = public_target(&dir, Some("Trip/Day 1"), "a.jpg").unwrap();
+        assert_eq!(a, dir.join("Trip/Day 1/a.jpg"));
+        fs::write(&a, b"x").unwrap();
+        let b = public_target(&dir, Some("Trip/Day 1"), "a.jpg").unwrap();
+        assert_eq!(b, dir.join("Trip/Day 1/a (1).jpg"));
+        // A download in flight holds its name too.
+        fs::write(format!("{}.part", b.display()), b"x").unwrap();
+        let c = public_target(&dir, Some("Trip/Day 1"), "a.jpg").unwrap();
+        assert_eq!(c, dir.join("Trip/Day 1/a (2).jpg"));
+        // No climbing out of the folder.
+        let d = public_target(&dir, Some("../x"), "noext").unwrap();
+        assert_eq!(d, dir.join("x/noext"));
+        // Nowhere to write: the caller falls back to staging.
+        assert!(public_target(Path::new("/proc/nope"), None, "a").is_none());
+        let rec = Record { path: "/x/a".into(), direct: true, ..Record::default() };
+        assert_eq!(partial(&rec), PathBuf::from("/x/a.part"));
     }
 }

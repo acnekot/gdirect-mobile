@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 const folderMime = 'application/vnd.google-apps.folder';
 const shortcutMime = 'application/vnd.google-apps.shortcut';
 
-enum PreviewKind { none, image, text }
+enum PreviewKind { none, image, text, pdf, media }
 
 /// A Drive item as the engine reports it.
 class DriveFile {
@@ -38,6 +38,22 @@ class DriveFile {
       ].contains(mimeType.replaceFirst('application/vnd.google-apps.', ''));
 
   bool get canDownload => !isFolder && (!isWorkspace || exportable);
+  String? get thumbnail => json['thumbnailLink'] as String?;
+
+  bool get isVideo =>
+      mimeType.startsWith('video/') ||
+      (mimeType == 'application/octet-stream' &&
+          const ['mp4', 'mkv', 'mov', 'webm', 'avi', 'ts', 'm4v', 'flv'].contains(_ext));
+  bool get isAudio =>
+      mimeType.startsWith('audio/') ||
+      (mimeType == 'application/octet-stream' &&
+          const ['mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wav'].contains(_ext));
+
+  /// A type the system player expects for a stream of this file.
+  String get mediaMime {
+    if (mimeType != 'application/octet-stream') return mimeType;
+    return isAudio ? 'audio/*' : 'video/*';
+  }
 
   String get _ext {
     final dot = name.lastIndexOf('.');
@@ -52,6 +68,10 @@ class DriveFile {
       return PreviewKind.text;
     }
     if (isWorkspace) return PreviewKind.none;
+    if (isVideo || isAudio) return PreviewKind.media;
+    if (m == 'application/pdf' || (_ext == 'pdf' && m == 'application/octet-stream')) {
+      return PreviewKind.pdf;
+    }
     if (const ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].contains(m)) {
       return PreviewKind.image;
     }
@@ -118,6 +138,16 @@ class TransferItem {
   int get id => json['id'] as int;
   bool get isDownload => json['kind'] == 'download';
   bool get isPreview => json['preview'] == true;
+
+  /// Written straight to Downloads instead of being staged in the app.
+  bool get direct => json['direct'] == true;
+  String? get subdir => json['subdir'] as String?;
+
+  /// Upload: the document the data comes from.
+  String? get source => json['source'] as String?;
+
+  /// The upload is next in line and needs its document opened.
+  bool get wantsFd => json['wantsFd'] == true;
   String get name => json['name'] as String;
   String get path => json['path'] as String;
   String get status => json['status'] as String;

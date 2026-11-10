@@ -101,6 +101,60 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  bool _asking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    app.addListener(_offerShared);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _offerShared());
+  }
+
+  @override
+  void dispose() {
+    app.removeListener(_offerShared);
+    super.dispose();
+  }
+
+  /// Files another app shared with us: ask where in Drive they should go.
+  Future<void> _offerShared() async {
+    if (_asking || app.shared.isEmpty || !mounted) return;
+    _asking = true;
+    final files = app.shared;
+    final here = app.folderId != 'root' && app.folderName.isNotEmpty;
+    final target = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(t('上传到云端硬盘', 'Upload to Drive')),
+        content: Text(files.length == 1
+            ? files.first.name
+            : t('${files.length} 个文件', '${files.length} files')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: Text(t('取消', 'Cancel'))),
+          if (here)
+            TextButton(
+              onPressed: () => Navigator.pop(context, app.folderId),
+              child: Text(t('传到“${ellipsize(app.folderName, 16)}”', 'To “${ellipsize(app.folderName, 16)}”')),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'root'),
+            child: Text(t('传到我的云端硬盘', 'To My Drive')),
+          ),
+        ],
+      ),
+    );
+    app.clearShared();
+    _asking = false;
+    if (target == null) return;
+    try {
+      await app.uploadPicked(files, target);
+      if (mounted) _go(1);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
 
   void _go(int index) => setState(() => _index = index);
 

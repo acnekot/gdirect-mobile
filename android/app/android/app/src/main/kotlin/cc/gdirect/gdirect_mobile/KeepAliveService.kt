@@ -24,13 +24,16 @@ class KeepAliveService : Service() {
         )
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val open = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE)
-        val notification = Notification.Builder(this, "transfers")
+        val progress = intent?.getIntExtra("progress", -1) ?: -1
+        val builder = Notification.Builder(this, "transfers")
             .setContentTitle("gdirect")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentIntent(open)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .build()
+        if (progress in 0..100) builder.setProgress(100, progress, false)
+        val notification = builder.build()
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         if (wake == null) {
             val power = getSystemService(PowerManager::class.java)

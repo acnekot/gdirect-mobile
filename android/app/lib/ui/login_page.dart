@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:convert';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +8,7 @@ import '../engine.dart';
 import '../format.dart';
 import '../main.dart';
 import '../models.dart';
+import '../native.dart';
 
 const setupGuide =
     'https://github.com/mizorewww/gdirect/blob/main/docs/configuration/README.zh-CN.md';
@@ -34,14 +33,52 @@ class _LoginPageState extends State<LoginPage> {
   String? _url;
   String? _error;
   Timer? _poll;
+  bool _held = false;
+
+  /// Sign in through the person's own token server instead of Google's pages.
+  bool _viaServer = false;
+  bool _serverBusy = false;
+  bool _showKey = false;
+  final _serverUrl = TextEditingController();
+  final _serverKey = TextEditingController();
 
   @override
   void dispose() {
     _poll?.cancel();
     if (_waiting) app.setBusy('login', false);
+    _hold(false);
+    _serverUrl.dispose();
+    _serverKey.dispose();
     _id.dispose();
     _secret.dispose();
     super.dispose();
+  }
+
+  /// Google's sign-in needs whatever reaches Google, which may be the VPN
+  /// the app otherwise goes around.
+  void _hold(bool on) {
+    if (on == _held) return;
+    _held = on;
+    app.holdBypass(on);
+  }
+
+  Future<void> _serverLogin() async {
+    setState(() {
+      _error = null;
+      _serverBusy = true;
+    });
+    try {
+      await Engine.slow('server_login', {
+        'url': _serverUrl.text.trim(),
+        'key': _serverKey.text.trim(),
+      });
+      app.refreshState();
+      if (mounted && widget.canClose) Navigator.of(context).pop();
+    } catch (e) {
+      if (mounted) setState(() => _error = friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _serverBusy = false);
+    }
   }
 
   bool get _hasSavedClient => app.clientId != null && _secret.text.isEmpty;
@@ -70,13 +107,13 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _importJson() async {
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: const ['json'],
-    );
-    if (file == null) return;
-    final bytes = await file.readAsBytes();
-    _fill(utf8.decode(bytes, allowMalformed: true));
+    try {
+      final files = await Native.pickFiles();
+      if (files.isEmpty) return;
+      _fill(await Native.readText(files.first.uri));
+    } catch (e) {
+      if (mounted) setState(() => _error = friendlyError(e));
+    }
   }
 
   Future<void> _start() async {
@@ -87,6 +124,7 @@ class _LoginPageState extends State<LoginPage> {
       _url = null;
     });
     app.setBusy('login', true);
+    _hold(true);
     try {
       Engine.fast('login', {
         if (!_hasSavedClient) 'clientId': _id.text.trim(),
@@ -103,6 +141,7 @@ class _LoginPageState extends State<LoginPage> {
   void _stop(String? error) {
     _poll?.cancel();
     app.setBusy('login', false);
+    _hold(false);
     if (!mounted) return;
     setState(() {
       _waiting = false;
@@ -137,6 +176,7 @@ class _LoginPageState extends State<LoginPage> {
       case 'done':
         _poll?.cancel();
         app.setBusy('login', false);
+        _hold(false);
         app.refreshState();
         if (mounted) {
           setState(() => _waiting = false);
@@ -179,6 +219,78 @@ class _LoginPageState extends State<LoginPage> {
               ),
               const SizedBox(height: 20),
             ],
+            SegmentedButton<bool>(
+              segments: [
+                ButtonSegment(value: false, label: Text(t('Google 登录', 'Google sign-in'))),
+                ButtonSegment(value: true, label: Text(t('我的服务器', 'My server'))),
+              ],
+              selected: {_viaServer},
+              onSelectionChanged: _waiting || _serverBusy
+                  ? null
+                  : (v) => setState(() {
+                        _viaServer = v.first;
+                        _error = null;
+                      }),
+            ),
+            const SizedBox(height: 16),
+            if (_viaServer) ...[
+              Text(
+                t('在能访问 Google 的服务器上运行仓库里的 server/token_server.py 并登录一次，然后在这里填写它的地址和访问密钥。服务器只发放访问令牌，文件仍由手机直连 Google 传输。',
+                    'Run server/token_server.py from the repository on a machine that reaches Google and sign in there once, then enter its address and access key. The server only hands out access tokens; files still go between this phone and Google directly.'),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _serverUrl,
+                enabled: !_serverBusy,
+                autocorrect: false,
+                keyboardType: TextInputType.url,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: t('服务器地址', 'Server address'),
+                  hintText: 'https://drive.example.com',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _serverKey,
+                enabled: !_serverBusy,
+                obscureText: !_showKey,
+                autocorrect: false,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: t('访问密钥', 'Access key'),
+                  suffixIcon: IconButton(
+                    icon: Icon(_showKey ? Icons.visibility_off_rounded : Icons.visibility_rounded),
+                    onPressed: () => setState(() => _showKey = !_showKey),
+                  ),
+                ),
+              ),
+              if (_serverUrl.text.trim().startsWith('http://')) ...[
+                const SizedBox(height: 8),
+                Text(
+                  t('这个地址没有加密（http）：访问密钥和令牌会以明文经过网络，建议给服务器配上 HTTPS。',
+                      'This address is not encrypted (http): the key and tokens cross the network in the clear. Put HTTPS in front of the server.'),
+                  style: TextStyle(color: scheme.error),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: TextStyle(color: scheme.error)),
+              ],
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: _serverBusy ||
+                        _serverUrl.text.trim().isEmpty ||
+                        _serverKey.text.trim().isEmpty
+                    ? null
+                    : _serverLogin,
+                icon: _serverBusy
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.dns_rounded),
+                label: Text(t('连接服务器', 'Connect')),
+              ),
+            ] else ...[
             Card(
               child: ExpansionTile(
                 shape: const Border(),
@@ -316,6 +428,7 @@ class _LoginPageState extends State<LoginPage> {
                   'After you approve, the browser goes to 127.0.0.1 on this phone; return to gdirect. Credentials stay on this phone.'),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
+            ],
           ],
         ),
       ),

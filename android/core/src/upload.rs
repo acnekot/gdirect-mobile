@@ -125,20 +125,44 @@ impl Api {
         mut progress: impl FnMut(u64, u64),
     ) -> Result<File> {
         let path = path.canonicalize().context("cannot open upload file")?;
-        let mut file = fs::File::open(&path)?;
+        let file = fs::File::open(&path)?;
+        let name = name
+            .or_else(|| path.file_name().and_then(|s| s.to_str()))
+            .context("file name must be UTF-8; use --name")?;
+        self.upload_open(file, &path.to_string_lossy(), parent, name, token, &mut progress)
+    }
+    /// Uploads an already open file, such as one an Android document
+    /// provider handed out. `label` identifies the source across runs (its
+    /// URI), so an interrupted upload of the same source resumes.
+    pub fn upload_handle(
+        &self,
+        file: fs::File,
+        label: &str,
+        parent: &str,
+        name: &str,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<File> {
+        self.upload_open(file, label, parent, name, &mut String::new(), &mut progress)
+    }
+    fn upload_open(
+        &self,
+        mut file: fs::File,
+        label: &str,
+        parent: &str,
+        name: &str,
+        token: &mut String,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<File> {
         let metadata = file.metadata()?;
         ensure!(metadata.is_file(), "upload expects a regular file");
         let size = metadata.len();
         let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
-        let name = name
-            .or_else(|| path.file_name().and_then(|s| s.to_str()))
-            .context("file name must be UTF-8; use --name")?;
         ensure!(!name.is_empty(), "file name cannot be empty");
         ensure!(crate::drive::valid_id(parent), "invalid parent folder ID");
         let db = Store::open(&self.db)?;
         let key = Store::upload_key(
             self.account.as_deref().unwrap_or_default(),
-            &serde_json::to_string(&(path.to_string_lossy(), parent, name))?,
+            &serde_json::to_string(&(label, parent, name))?,
         );
         let saved = db
             .setting(&key)?

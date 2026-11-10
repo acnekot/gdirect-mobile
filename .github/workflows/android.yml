@@ -2,6 +2,8 @@ name: Android
 
 on:
   push:
+    branches: [android-mobile]
+    tags: ['android-v*']
     paths: ['android/**', '.github/workflows/android.yml']
   pull_request:
     paths: ['android/**', '.github/workflows/android.yml']
@@ -10,6 +12,9 @@ on:
 defaults:
   run:
     working-directory: android
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -22,11 +27,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install NDK
+      # The runner image already carries the Android SDK, so use its sdkmanager
+      # directly (android-actions/setup-android fails to find package 'tools').
+      - name: Install SDK parts
         run: |
-          sdkmanager "ndk;27.2.12479018" "platforms;android-36" "build-tools;36.0.0"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "platforms;android-36" "build-tools;36.0.0" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -52,11 +58,45 @@ jobs:
           flutter analyze
           flutter test
 
-      - name: Build APK
+      # Optional release key: add the secrets ANDROID_KEYSTORE_BASE64,
+      # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD.
+      - name: Release key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > app/android/release.jks
+            cat > app/android/key.properties <<EOF
+          storeFile=release.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+          else
+            echo "No release key configured; the debug key will sign the build."
+          fi
+
+      - name: Build APKs
         working-directory: android/app
         run: flutter build apk --release --split-per-abi
+
+      - name: Name the files
+        run: |
+          mkdir -p dist
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp app/build/app/outputs/flutter-apk/app-$abi-release.apk dist/gdirect-mobile-android-$abi.apk
+          done
+          cd dist && sha256sum *.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: gdirect-android
-          path: android/app/build/app/outputs/flutter-apk/*.apk
+          path: android/dist/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: android/dist
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "gdirect mobile ${GITHUB_REF_NAME#android-v}" --generate-notes --verify-tag * || gh release upload "$GITHUB_REF_NAME" * --clobber

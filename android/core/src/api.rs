@@ -19,7 +19,7 @@ pub const FIELDS: &str = "id,name,mimeType,size,modifiedTime,md5Checksum,resourc
 parents,starred,trashed,explicitlyTrashed,trashedTime,driveId,webViewLink,createdTime,\
 viewedByMeTime,sharedWithMeTime,shared,owners(displayName,emailAddress,me),\
 sharingUser(displayName,emailAddress,me),lastModifyingUser(displayName,emailAddress,me),\
-shortcutDetails(targetId,targetMimeType),capabilities(canAddChildren,canRename,canTrash,\
+thumbnailLink,shortcutDetails(targetId,targetMimeType),capabilities(canAddChildren,canRename,canTrash,\
 canDelete,canUntrash,canDownload,canShare,canCopy)";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 pub(crate) const API_HOST: &str = "www.googleapis.com";
@@ -90,6 +90,9 @@ pub struct File {
     pub shortcut_details: Option<ShortcutDetails>,
     #[serde(default)]
     pub capabilities: Option<Capabilities>,
+    /// A short-lived address of a small preview image, when Drive has one.
+    #[serde(default)]
+    pub thumbnail_link: Option<String>,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -584,6 +587,14 @@ impl Api {
     }
     fn refresh(&self) -> Result<String> {
         let db = Store::open(&self.db)?;
+        // An account signed in on the person's own server gets its tokens there.
+        if let Some(account) = &self.account {
+            if let Some(broker) = crate::broker::saved(&db, account)? {
+                let reply = crate::broker::fetch(&broker)?;
+                db.save_token(account, &reply.access_token, reply.expires_in)?;
+                return Ok(reply.access_token);
+            }
+        }
         // The account is verified at login; refreshing its credentials cannot change it.
         let credentials = crate::auth::credentials(&db, self.account.as_deref())?;
         let token = self.refresh_pinned(&credentials)?;
@@ -615,6 +626,10 @@ impl Api {
             }
         }
         crate::auth::refresh(credentials)
+    }
+    /// The account an access token belongs to, asked of Drive.
+    pub fn email_of(&self, token: &str) -> Result<String> {
+        self.account_for_token(token)
     }
     fn account_for_token(&self, token: &str) -> Result<String> {
         let response = self

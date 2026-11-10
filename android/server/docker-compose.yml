@@ -1,0 +1,13 @@
+services:
+  gdirect-tokens:
+    build: .
+    restart: unless-stopped
+    environment:
+      GDIRECT_CLIENT_ID: "${GDIRECT_CLIENT_ID}"
+      GDIRECT_CLIENT_SECRET: "${GDIRECT_CLIENT_SECRET}"
+      GDIRECT_ACCESS_KEY: "${GDIRECT_ACCESS_KEY}"
+    volumes:
+      - ./data:/data
+    # Listens on this machine only: put an HTTPS reverse proxy in front.
+    ports:
+      - "127.0.0.1:8787:8787"
